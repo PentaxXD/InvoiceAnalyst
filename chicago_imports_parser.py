@@ -6,7 +6,7 @@ import argparse
 import csv
 import re
 from dataclasses import dataclass
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal, InvalidOperation, ROUND_FLOOR
 from pathlib import Path
 from typing import List, Optional
 
@@ -343,12 +343,31 @@ def write_csv(items: List[InvoiceItem], out_path: Path) -> None:
                 return "High"
             return "Premium"
 
+        def compute_price_each(rate_dec: Optional[Decimal], pack_count: Optional[int]) -> Optional[Decimal]:
+            if rate_dec is None or not pack_count or pack_count <= 0:
+                return None
+            return (rate_dec / Decimal(pack_count))
+
+        def round_to_next_9_cents(x: Decimal) -> Decimal:
+            # Find the smallest y >= x of the form N + k/10 + 0.09 (i.e., cents end with 9)
+            tenths_floor = (x * Decimal('10')).to_integral_value(rounding=ROUND_FLOOR) / Decimal('10')
+            candidate = tenths_floor + Decimal('0.09')
+            if candidate < x:
+                candidate = candidate + Decimal('0.10')
+            return candidate.quantize(Decimal('0.01'))
+
+        def fmt_money(d: Optional[Decimal]) -> str:
+            return f"{d.quantize(Decimal('0.01')):.2f}" if d is not None else ""
+
         headers = [
             "Quantity",
             "Pack Size",
             "Item",
             "Rate",
             "Amount",
+            "Price Each",
+            "Store Price",
+            "Online Price",
             "Rate Category",
             "Pack Size Category",
         ]
@@ -356,12 +375,18 @@ def write_csv(items: List[InvoiceItem], out_path: Path) -> None:
         for it in items:
             pack_count = parse_pack_count(it.pack_size)
             rate_dec = parse_rate_decimal(it.rate)
+            price_each = compute_price_each(rate_dec, pack_count)
+            store_price = round_to_next_9_cents((price_each * Decimal('1.55') + Decimal('0.30'))) if price_each is not None else None
+            online_price = (store_price + Decimal('0.50')).quantize(Decimal('0.01')) if store_price is not None else None
             writer.writerow([
                 it.quantity,
                 it.pack_size,
                 it.item,
                 it.rate,
                 it.amount,
+                fmt_money(price_each),
+                fmt_money(store_price),
+                fmt_money(online_price),
                 categorize_rate(rate_dec),
                 categorize_pack_count(pack_count),
             ])
