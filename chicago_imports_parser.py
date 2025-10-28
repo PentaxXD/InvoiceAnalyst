@@ -415,7 +415,12 @@ def main() -> None:
         )
     )
     parser.add_argument("input", type=Path, help="Path to input .txt or .pdf")
-    parser.add_argument("output", type=Path, help="Path to output .csv")
+    parser.add_argument(
+        "-o",
+        "--output",
+        type=Path,
+        help="Path to output .csv (default: <input>_parsed.csv)",
+    )
 
     args = parser.parse_args()
 
@@ -424,7 +429,8 @@ def main() -> None:
 
     raw_text = _read_input_text(args.input)
     items = parse_invoice_text(raw_text)
-    write_csv(items, args.output)
+    out_path = args.output or (args.input.parent / f"{args.input.stem}_parsed.csv")
+    write_csv(items, out_path)
 
 
 if __name__ == "__main__":
