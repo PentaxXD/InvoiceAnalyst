@@ -6,6 +6,7 @@ import argparse
 import csv
 import re
 from dataclasses import dataclass
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import List, Optional
 
@@ -309,9 +310,61 @@ def write_csv(items: List[InvoiceItem], out_path: Path) -> None:
     out_path.parent.mkdir(parents=True, exist_ok=True)
     with out_path.open("w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
-        writer.writerow(["Quantity", "Pack Size", "Item", "Rate", "Amount"])
+        # Categorization helpers
+        def parse_pack_count(pack_size: str) -> Optional[int]:
+            m = re.match(r"^\s*(\d+)\s*/", pack_size)
+            return int(m.group(1)) if m else None
+
+        def categorize_pack_count(pack_count: Optional[int]) -> str:
+            if pack_count is None:
+                return "Unknown"
+            if pack_count <= 10:
+                return "Small Pack"
+            if pack_count <= 24:
+                return "Medium Pack"
+            if pack_count <= 60:
+                return "Large Pack"
+            return "Bulk Pack"
+
+        def parse_rate_decimal(rate: str) -> Optional[Decimal]:
+            try:
+                return Decimal(rate)
+            except (InvalidOperation, ValueError):
+                return None
+
+        def categorize_rate(rate_dec: Optional[Decimal]) -> str:
+            if rate_dec is None:
+                return "Unknown"
+            if rate_dec < Decimal("50"):
+                return "Low"
+            if rate_dec < Decimal("100"):
+                return "Medium"
+            if rate_dec < Decimal("200"):
+                return "High"
+            return "Premium"
+
+        headers = [
+            "Quantity",
+            "Pack Size",
+            "Item",
+            "Rate",
+            "Amount",
+            "Rate Category",
+            "Pack Size Category",
+        ]
+        writer.writerow(headers)
         for it in items:
-            writer.writerow([it.quantity, it.pack_size, it.item, it.rate, it.amount])
+            pack_count = parse_pack_count(it.pack_size)
+            rate_dec = parse_rate_decimal(it.rate)
+            writer.writerow([
+                it.quantity,
+                it.pack_size,
+                it.item,
+                it.rate,
+                it.amount,
+                categorize_rate(rate_dec),
+                categorize_pack_count(pack_count),
+            ])
 
 
 def _read_input_text(input_path: Path) -> str:
