@@ -1,0 +1,79 @@
+Chicago Importing
+Company
+11200 E. Main St
+Huntley IL 60142
+P: (847) 669-2100
+Sales Order
+Order Confirmation #SO2290048688
+Not an Invoice - DO NOT PAY 4/22/2025
+SO2290048688
+1 of 16
+Bill To Ship To TOTAL
+Scott Stowell
+BAVARIA SAUSAGE KITCHEN
+6317 NESBITT RD
+MADISON WI 53719
+United States
+Scott Stowell
+BAVARIA SAUSAGE KITCHEN
+6317 NESBITT RD
+MADISON WI 53719
+United States $15,657.20
+Terms Account PO # Shipping Method
+Net 20 20162 BAVARIA SAUSAGE KITCHEN HOLIDAY 2025
+PREORDER
+Best Way
+
+Quantity Pack Size Item Rate Amount
+3 24/2.65
+OZ
+24921 Storz Milk Chocolate Nougat Bar
+Storz Milk Chocolate Nougat Bar
+$74.40 $223.20
+CDISC-1004 Customer - Holiday Preorder
+Holiday Preorder
+-5% $(11.16)
+2 150/.22
+OZ
+24951 Storz Milk Chocolate Small Ladybug Display
+Storz Milk Chocolate Small Ladybug Display
+$60.00 $120.00
+CDISC-1004 Customer - Holiday Preorder
+Holiday Preorder
+-5% $(6.00)
+1 18/1.5 OZ 24723 Fort Knox® Milk Chocolate Gold Coins Mesh Bag
+Fort Knox® Milk Chocolate Gold Coins Mesh Bag
+$33.30 $33.30
+CDISC-1004 Customer - Holiday Preorder
+Holiday Preorder
+-5% $(1.67)
+1 10/2 OZ 24784 Fort Knox® Milk Chocolate Huge Medallions
+Display
+Fort Knox® Milk Chocolate Huge Medallions Display
+$34.50 $34.50
+CDISC-1004 Customer - Holiday Preorder
+Holiday Preorder
+-5% $(1.73)
+2 10/3.5 OZ 25140 Sarotti Chocolate Cat Tongues
+Sarotti Chocolate Cat Tongues
+$47.50 $95.00
+CDISC-1004 Customer - Holiday Preorder
+Holiday Preorder
+-5% $(4.75)
+2 10/3.5 OZ 25150 Sarotti Marbled Chocolate Cat Tongues
+Sarotti Marbled Chocolate Cat Tongues
+$47.50 $95.00
+CDISC-1004 Customer - Holiday Preorder
+Holiday Preorder
+-5% $(4.75)
+6 10/8.8 OZ 25157 Sarotti Dark Chocolate Covered Liqueur Cherries
+Sarotti Dark Chocolate Covered Liqueur Cherries
+$85.00 $510.00
+CDISC-1004 Customer - Holiday Preorder
+Holiday Preorder
+-5% $(25.50)
+2 12/2.65
+OZ
+11704 Heilemann Milk Chocolate Cat Tongues
+Heilemann Milk Chocolate Cat Tongues
+$87.00 $174.00
