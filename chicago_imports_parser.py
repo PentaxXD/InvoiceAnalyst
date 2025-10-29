@@ -5,6 +5,8 @@ from __future__ import annotations
 import argparse
 import csv
 import re
+import subprocess
+import sys
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation, ROUND_FLOOR
 from pathlib import Path
@@ -318,14 +320,40 @@ def write_csv(items: List[InvoiceItem], out_path: Path) -> None:
             ])
 
 
+def _ensure_pdfminer_extract_text():
+    try:
+        from pdfminer.high_level import extract_text  # type: ignore
+        return extract_text
+    except Exception:
+        # Try installing pdfminer.six for the current user silently
+        try:
+            subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "pip",
+                    "install",
+                    "--user",
+                    "--disable-pip-version-check",
+                    "-q",
+                    "pdfminer.six",
+                ],
+                check=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            from pdfminer.high_level import extract_text  # type: ignore
+            return extract_text
+        except Exception:
+            return None
+
+
 def _read_input_text(input_path: Path) -> str:
     suffix = input_path.suffix.lower()
     if suffix == ".pdf":
-        try:
-            from pdfminer.high_level import extract_text  # type: ignore
-        except Exception:
-            # Graceful fallback when pdfminer.six is not available
-            # Return empty text so downstream still writes a CSV header
+        extract_text = _ensure_pdfminer_extract_text()
+        if extract_text is None:
+            # As a last resort, return empty text; caller will still write headers
             return ""
         return extract_text(str(input_path))
     # default: treat as text
