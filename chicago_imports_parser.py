@@ -258,91 +258,39 @@ def parse_invoice_text(raw_text: str) -> List[InvoiceItem]:
     for i, (code_idx, qty_val, pack_size, item_name) in enumerate(items_meta):
         start = code_idx
         end = code_indices[i + 1] if (i + 1) < len(code_indices) else len(lines)
-        # Primary: scan forward and pick a pair that matches the expected quantity if known
-        Token = tuple[int, Decimal, str]
-        local_tokens: List[Token] = []
-        same_line_pairs: List[tuple[str, str]] = []
+        # Primary: scan forward within this item's block; collect first two positive prices
+        collected: List[str] = []
         for li in range(start, end):
             s = lines[li].strip()
             if not s or "$(" in s:
                 continue
-            mvs = _MONEY_RE.findall(s)
-            if not mvs:
-                continue
-            if len(mvs) >= 2:
-                same_line_pairs.append((mvs[0].replace(",", ""), mvs[1].replace(",", "")))
-            for mv in mvs:
-                try:
-                    d = Decimal(mv.replace(",", ""))
-                except Exception:
-                    continue
-                local_tokens.append((li, d, mv.replace(",", "")))
-
-        def choose_pair_with_qty(tokens: List[Token], qty: int) -> Optional[tuple[str, str]]:
-            # Prefer same-line pairs that match qty
-            for li in range(start, end):
-                # reconstruct line tokens
-                line_vals = [t for t in local_tokens if t[0] == li]
-                if len(line_vals) >= 2:
-                    r = line_vals[0][1]
-                    a = line_vals[1][1]
-                    if r > 0 and int((a / r).to_integral_value()) == qty:
-                        return (line_vals[0][2], line_vals[1][2])
-            # Next, sliding window pairs
-            for idx_r, (li_r, r, rs) in enumerate(tokens):
-                for idx_a in range(idx_r + 1, min(len(tokens), idx_r + 12)):
-                    li_a, a, as_ = tokens[idx_a]
-                    if r > 0 and int((a / r).to_integral_value()) == qty:
-                        return (rs, as_)
-            return None
-
-        selected_pair: Optional[tuple[str, str]] = None
-        if qty_val is not None:
-            selected_pair = choose_pair_with_qty(local_tokens, qty_val)
-        if selected_pair is None and same_line_pairs:
-            selected_pair = same_line_pairs[0]
-        if selected_pair is None and local_tokens:
-            # As a last local attempt, pick first token and next with integer multiple <= 100
-            r_li, r, rs = local_tokens[0]
-            amount_s = rs
-            for _, a, as_ in local_tokens[1:12]:
-                if r > 0:
-                    q = a / r
-                    q_int = int(q.to_integral_value())
-                    if 1 <= q_int <= 100:
-                        amount_s = as_
+            if _ITEM_CODE_PREFIX_RE.match(s) or _COMBINED_QTY_PACK_CODE_RE.match(s):
+                # Reached next item; stop
+                break
+            if "$" in s:
+                for mv in _MONEY_RE.findall(s):
+                    collected.append(mv.replace(",", ""))
+                    if len(collected) >= 2:
                         break
-            selected_pair = (rs, amount_s)
-
-        if selected_pair is not None:
-            rate_val, amount_val = selected_pair
+            if len(collected) >= 2:
+                break
+        if len(collected) >= 2:
+            rate_val, amount_val = collected[0], collected[1]
+        elif len(collected) == 1:
+            rate_val, amount_val = collected[0], collected[0]
         else:
-            # Global fallback with ordering, keep advancing the global cursor
-            if money_cursor + 1 < len(money_tokens):
-                rate_val = money_tokens[money_cursor][1]
-                amount_val = money_tokens[money_cursor + 1][1]
-                money_cursor += 2
-            elif money_cursor < len(money_tokens):
-                rate_val = amount_val = money_tokens[money_cursor][1]
-                money_cursor += 1
-            else:
-                rate_val = amount_val = ""
+            rate_val = amount_val = ""
 
-        # Derive quantity if missing from prices (qty ≈ amount / rate)
-        final_qty: int
-        if qty_val is not None:
-            final_qty = qty_val
-        else:
-            try:
-                r = Decimal(rate_val)
-                a = Decimal(amount_val)
-                if r > 0:
-                    q_est = int((a / r).to_integral_value())
-                    final_qty = q_est if q_est > 0 else 1
-                else:
-                    final_qty = 1
-            except Exception:
-                final_qty = 1
+        # Finalize quantity strictly from parsed qty line (do not derive from prices)
+        final_qty: int = qty_val if qty_val is not None else 1
+
+        # If only a single price exists (equal rate/amount) but qty is known, compute amount
+        try:
+            if rate_val and (not amount_val or amount_val == rate_val) and final_qty > 1:
+                rv = Decimal(rate_val)
+                amount_val = f"{(rv * Decimal(final_qty)).quantize(Decimal('0.01'))}"
+        except Exception:
+            pass
 
         items.append(
             InvoiceItem(
