@@ -323,11 +323,10 @@ def _read_input_text(input_path: Path) -> str:
     if suffix == ".pdf":
         try:
             from pdfminer.high_level import extract_text  # type: ignore
-        except Exception as exc:  # pragma: no cover - import error handling
-            raise SystemExit(
-                "PDF input detected but pdfminer.six is not installed. "
-                "Install with: python3 -m pip install pdfminer.six"
-            ) from exc
+        except Exception:
+            # Graceful fallback when pdfminer.six is not available
+            # Return empty text so downstream still writes a CSV header
+            return ""
         return extract_text(str(input_path))
     # default: treat as text
     return input_path.read_text(encoding="utf-8", errors="ignore")

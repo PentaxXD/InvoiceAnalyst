@@ -10,7 +10,7 @@ def cmd_items(input_path: Path, out_path: Optional[Path], all_pages: bool) -> in
     # all_pages is currently a no-op because we extract full text by default
     raw_text = _read_input_text(input_path)
     items = parse_invoice_text(raw_text)
-    out = out_path or (input_path.parent / "invoice_items.csv")
+    out = out_path or Path("invoice_items.csv")
     write_csv(items, out)
     print(str(out))
     return 0
