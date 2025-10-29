@@ -146,7 +146,18 @@ def parse_invoice_text(raw_text: str) -> List[InvoiceItem]:
             continue
 
         # Build item name (current line name + short continuation lines)
-        name_parts: List[str] = [mcode.group("name").strip()]
+        def _norm_name(x: str) -> str:
+            x = x.replace("®", " ")
+            x = re.sub(r"\s+", " ", x)
+            return x.strip().lower()
+
+        name_parts: List[str] = []
+        seen_norm: set[str] = set()
+        first_name = mcode.group("name").strip()
+        n0 = _norm_name(first_name)
+        if n0 not in seen_norm:
+            name_parts.append(first_name)
+            seen_norm.add(n0)
         fwd = idx + 1
         while fwd < len(lines):
             probe = _strip_oz_prefix(lines[fwd].strip())
@@ -161,7 +172,10 @@ def parse_invoice_text(raw_text: str) -> List[InvoiceItem]:
             if _PACK_ONLY_RE.match(probe) or _QTY_ONLY_RE.match(probe) or probe.startswith("$"):
                 break
             # Avoid runaway names; keep to 2 lines max beyond the code line
-            name_parts.append(probe)
+            np = _norm_name(probe)
+            if np not in seen_norm:
+                name_parts.append(probe)
+                seen_norm.add(np)
             if len(name_parts) >= 3:
                 break
             fwd += 1
@@ -170,8 +184,8 @@ def parse_invoice_text(raw_text: str) -> List[InvoiceItem]:
         pack_size = f"{pack_ratio}{(' ' + pack_units) if pack_units else ''}".strip()
 
         # Compose item name (prefer the longest part covering others)
-        longest = max(name_parts, key=len)
-        if all(p.lower() in longest.lower() for p in name_parts):
+        longest = max(name_parts, key=lambda s: len(_norm_name(s)))
+        if all(_norm_name(p) in _norm_name(longest) for p in name_parts):
             item_name = longest
         else:
             item_name = " ".join(name_parts)
