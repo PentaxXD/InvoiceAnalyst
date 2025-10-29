@@ -30,6 +30,10 @@ _QTY_ONLY_RE = re.compile(r"^\s*(?P<qty>\d+)\s*$")
 _PACK_ONLY_RE = re.compile(r"^\s*(?P<pack>[0-9]+\/[0-9.]+)\s*(?P<oz>OZ\.?)?\s*$", re.IGNORECASE)
 _MONEY_RE = re.compile(r"\$\s*(?P<val>[0-9,]+\.[0-9]{2})")
 _ITEM_CODE_PREFIX_RE = re.compile(r"^\s*(?P<code>\d{4,6})\s+(?P<name>.*\S)\s*$")
+_COMBINED_QTY_PACK_CODE_RE = re.compile(
+    r"^\s*(?P<qty>\d+)\s+(?P<pack>[0-9]+\/[0-9.]+)(?:\s*(?P<oz>OZ\.?))?\s+(?P<code>\d{4,6})\s+(?P<name>.*\S)\s*$",
+    re.IGNORECASE,
+)
 
 # Lines to skip after item pricing
 _SKIP_EXACT = {
@@ -94,7 +98,7 @@ def parse_invoice_text(raw_text: str) -> List[InvoiceItem]:
         return re.sub(r"^\s*OZ\.?\s+", "", s, flags=re.IGNORECASE)
 
     items: List[InvoiceItem] = []
-    items_meta: List[tuple[int, int, str, str]] = []  # (code_idx, qty, pack_size, item_name)
+    items_meta: List[tuple[int, Optional[int], str, str]] = []  # (code_idx, qty?, pack_size, item_name)
 
     # Helper to find nearest pack line above a given index
     def find_prev_pack(idx: int) -> tuple[Optional[str], str, int]:
@@ -135,6 +139,49 @@ def parse_invoice_text(raw_text: str) -> List[InvoiceItem]:
     idx = 0
     while idx < len(lines):
         s = lines[idx].strip()
+        mcomb = _COMBINED_QTY_PACK_CODE_RE.match(s)
+        if mcomb:
+            # Quantity, pack, optional OZ, code and name all on one line
+            qty_val: Optional[int] = int(mcomb.group("qty"))
+            pack_ratio = mcomb.group("pack").strip()
+            pack_units = "OZ" if mcomb.group("oz") else ""
+            first_name = mcomb.group("name").strip()
+
+            def _norm_name(x: str) -> str:
+                x = x.replace("®", " ")
+                x = re.sub(r"\s+", " ", x)
+                return x.strip().lower()
+
+            name_parts: List[str] = [first_name]
+            seen_norm: set[str] = {_norm_name(first_name)}
+            fwd = idx + 1
+            while fwd < len(lines):
+                probe = _strip_oz_prefix(lines[fwd].strip())
+                if not probe:
+                    fwd += 1
+                    continue
+                if _is_skip_line(probe):
+                    fwd += 1
+                    continue
+                if _ITEM_CODE_PREFIX_RE.match(probe) or _COMBINED_QTY_PACK_CODE_RE.match(probe):
+                    break
+                if _PACK_ONLY_RE.match(probe) or _QTY_ONLY_RE.match(probe) or probe.startswith("$"):
+                    break
+                np = _norm_name(probe)
+                if np not in seen_norm:
+                    name_parts.append(probe)
+                    seen_norm.add(np)
+                if len(name_parts) >= 3:
+                    break
+                fwd += 1
+
+            pack_size = f"{pack_ratio}{(' ' + pack_units) if pack_units else ''}".strip()
+            longest = max(name_parts, key=lambda s: len(_norm_name(s)))
+            item_name = longest if all(_norm_name(p) in _norm_name(longest) for p in name_parts) else " ".join(name_parts)
+            items_meta.append((idx, qty_val, pack_size, item_name))
+            idx = fwd + 1
+            continue
+
         mcode = _ITEM_CODE_PREFIX_RE.match(s)
         if not mcode:
             idx += 1
@@ -142,8 +189,8 @@ def parse_invoice_text(raw_text: str) -> List[InvoiceItem]:
 
         # Backtrack to get pack and qty
         pack_ratio, pack_units, pack_idx = find_prev_pack(idx)
-        qty_val = find_prev_qty(pack_idx if pack_idx != -1 else idx)
-        if pack_ratio is None or qty_val is None:
+        qty_val: Optional[int] = find_prev_qty(pack_idx if pack_idx != -1 else idx)
+        if pack_ratio is None:
             idx += 1
             continue
 
@@ -169,7 +216,7 @@ def parse_invoice_text(raw_text: str) -> List[InvoiceItem]:
             if _is_skip_line(probe):
                 fwd += 1
                 continue
-            if _ITEM_CODE_PREFIX_RE.match(probe):
+            if _ITEM_CODE_PREFIX_RE.match(probe) or _COMBINED_QTY_PACK_CODE_RE.match(probe):
                 break
             if _PACK_ONLY_RE.match(probe) or _QTY_ONLY_RE.match(probe) or probe.startswith("$"):
                 break
@@ -201,40 +248,88 @@ def parse_invoice_text(raw_text: str) -> List[InvoiceItem]:
     money_cursor = 0
     for i, (code_idx, qty_val, pack_size, item_name) in enumerate(items_meta):
         start = code_idx
-        end = code_indices[i + 2] if i + 2 < len(code_indices) else len(lines)
-        # Find first unused money token within [start, end)
-        pos = money_cursor
-        # advance to first token within window
-        while pos < len(money_tokens) and not (start <= money_tokens[pos][0] < end):
-            pos += 1
-        if pos < len(money_tokens):
-            # rate token
-            rate_val = money_tokens[pos][1]
-            # find the next token within window after pos for amount
-            pos2 = pos + 1
-            while pos2 < len(money_tokens) and not (start <= money_tokens[pos2][0] < end):
-                pos2 += 1
-            if pos2 < len(money_tokens):
-                amount_val = money_tokens[pos2][1]
-                money_cursor = pos2 + 1
-            else:
-                amount_val = rate_val
-                money_cursor = pos + 1
+        end = min(len(lines), code_idx + 200)
+        # Primary: scan lines from start..end and determine (rate, amount)
+        candidate_rate: Optional[Decimal] = None
+        candidate_rate_str: Optional[str] = None
+        selected_pair: Optional[tuple[str, str]] = None
+        local_values: List[Decimal] = []
+        local_strings: List[str] = []
+        for li in range(start, end):
+            s = lines[li].strip()
+            if not s or "$(" in s:
+                continue
+            mvs = _MONEY_RE.findall(s)
+            if not mvs:
+                continue
+            # If two amounts appear on the same line, use them directly
+            if len(mvs) >= 2 and selected_pair is None:
+                selected_pair = (mvs[0].replace(",", ""), mvs[1].replace(",", ""))
+                break
+            # Otherwise collect singles for later multiple check
+            for mv in mvs:
+                try:
+                    d = Decimal(mv.replace(",", ""))
+                except Exception:
+                    continue
+                local_values.append(d)
+                local_strings.append(mv.replace(",", ""))
+                if candidate_rate is None:
+                    candidate_rate = d
+                    candidate_rate_str = mv.replace(",", "")
+        if selected_pair is not None:
+            rate_val, amount_val = selected_pair
         else:
-            # Fallback: use the next global tokens regardless of window
-            if money_cursor + 1 < len(money_tokens):
-                rate_val = money_tokens[money_cursor][1]
-                amount_val = money_tokens[money_cursor + 1][1]
-                money_cursor += 2
-            elif money_cursor < len(money_tokens):
-                rate_val = amount_val = money_tokens[money_cursor][1]
-                money_cursor += 1
-            else:
+            # Use global ordered money tokens with line-awareness to pair values
+            # Advance cursor to first token on/after this item's start
+            pos = money_cursor
+            if pos >= len(money_tokens):
                 rate_val = amount_val = ""
+            else:
+                rate_line, rate_val = money_tokens[pos]
+                # Look ahead a small window for amount on same line or integer multiple
+                amount_val = rate_val
+                choose_pos2 = pos
+                for pos2 in range(pos + 1, min(len(money_tokens), pos + 20)):
+                    line2, val2 = money_tokens[pos2]
+                    if line2 == rate_line:
+                        amount_val = val2
+                        choose_pos2 = pos2
+                        break
+                    try:
+                        rd = Decimal(rate_val)
+                        ad = Decimal(val2)
+                        if rd > 0:
+                            q = ad / rd
+                            q_int = int(q.to_integral_value())
+                            if q_int >= 1 and q <= Decimal(q_int) + Decimal("0.0001") and q >= Decimal(q_int) - Decimal("0.0001") and q_int <= 100:
+                                amount_val = val2
+                                choose_pos2 = pos2
+                                break
+                    except Exception:
+                        pass
+                money_cursor = choose_pos2 + 1
+            # If still no tokens, stay empty (will degrade gracefully)
+
+        # Derive quantity if missing from prices (qty ≈ amount / rate)
+        final_qty: int
+        if qty_val is not None:
+            final_qty = qty_val
+        else:
+            try:
+                r = Decimal(rate_val)
+                a = Decimal(amount_val)
+                if r > 0:
+                    q_est = int((a / r).to_integral_value())
+                    final_qty = q_est if q_est > 0 else 1
+                else:
+                    final_qty = 1
+            except Exception:
+                final_qty = 1
 
         items.append(
             InvoiceItem(
-                quantity=qty_val,
+                quantity=final_qty,
                 pack_size=pack_size,
                 item=item_name,
                 rate=rate_val,
