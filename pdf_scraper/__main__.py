@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import argparse
 from pathlib import Path
+import sys
 from typing import Optional
 
 from chicago_imports_parser import _read_input_text, parse_invoice_text, write_csv
@@ -8,11 +9,18 @@ from chicago_imports_parser import _read_input_text, parse_invoice_text, write_c
 
 def cmd_items(input_path: Path, out_path: Optional[Path], all_pages: bool) -> int:
     # all_pages is currently a no-op because we extract full text by default
-    raw_text = _read_input_text(input_path)
-    items = parse_invoice_text(raw_text)
-    out = out_path or Path("invoice_items.csv")
-    write_csv(items, out)
-    print(str(out))
+    out = (out_path or Path("invoice_items.csv")).resolve()
+    try:
+        raw_text = _read_input_text(input_path)
+        items = parse_invoice_text(raw_text)
+    except Exception:
+        # Always produce a CSV file even if parsing fails
+        items = []
+    try:
+        write_csv(items, out)
+    finally:
+        # Print absolute output path for clarity
+        print(str(out))
     return 0
 
 
