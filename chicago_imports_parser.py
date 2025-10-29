@@ -207,9 +207,7 @@ def parse_invoice_text(raw_text: str) -> List[InvoiceItem]:
         # advance to first token within window
         while pos < len(money_tokens) and not (start <= money_tokens[pos][0] < end):
             pos += 1
-        if pos >= len(money_tokens):
-            rate_val = amount_val = ""
-        else:
+        if pos < len(money_tokens):
             # rate token
             rate_val = money_tokens[pos][1]
             # find the next token within window after pos for amount
@@ -222,8 +220,17 @@ def parse_invoice_text(raw_text: str) -> List[InvoiceItem]:
             else:
                 amount_val = rate_val
                 money_cursor = pos + 1
-        if rate_val == "" and amount_val == "":
-            rate_val = amount_val = ""
+        else:
+            # Fallback: use the next global tokens regardless of window
+            if money_cursor + 1 < len(money_tokens):
+                rate_val = money_tokens[money_cursor][1]
+                amount_val = money_tokens[money_cursor + 1][1]
+                money_cursor += 2
+            elif money_cursor < len(money_tokens):
+                rate_val = amount_val = money_tokens[money_cursor][1]
+                money_cursor += 1
+            else:
+                rate_val = amount_val = ""
 
         items.append(
             InvoiceItem(
