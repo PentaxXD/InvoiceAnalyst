@@ -87,221 +87,137 @@ def parse_invoice_text(raw_text: str) -> List[InvoiceItem]:
     text = _normalize_space(raw_text)
     lines = text.splitlines()
 
-    # Find anchor header
-    start_index = 0
-    for idx, line in enumerate(lines):
-        if HEADER_ANCHOR.lower() in line.lower():
-            start_index = idx + 1
-            break
-
-    i = start_index
-    items: List[InvoiceItem] = []
-
-    def peek(offset: int = 0) -> str:
-        if 0 <= i + offset < len(lines):
-            return lines[i + offset]
-        return ""
-
+    # New robust strategy: parse by item-code lines (e.g., "24921 Name...")
     def _strip_oz_prefix(s: str) -> str:
         return re.sub(r"^\s*OZ\.?\s+", "", s, flags=re.IGNORECASE)
 
-    while i < len(lines):
-        line = lines[i].strip()
+    items: List[InvoiceItem] = []
+    items_meta: List[tuple[int, int, str, str]] = []  # (code_idx, qty, pack_size, item_name)
 
-        # Skip blank or known non-item lines
-        if not line or _is_skip_line(line):
-            i += 1
+    # Helper to find nearest pack line above a given index
+    def find_prev_pack(idx: int) -> tuple[Optional[str], str, int]:
+        for j in range(idx - 1, max(-1, idx - 12), -1):
+            s = lines[j].strip()
+            if not s:
+                continue
+            if _is_skip_line(s):
+                continue
+            m = _PACK_ONLY_RE.match(s)
+            if m:
+                pack = m.group("pack").strip()
+                units = "OZ" if m.group("oz") else ""
+                return pack, units, j
+        return None, "", -1
+
+    def find_prev_qty(start_j: int) -> Optional[int]:
+        for k in range(start_j - 1, max(-1, start_j - 8), -1):
+            s = lines[k].strip()
+            if not s or _is_skip_line(s):
+                continue
+            m = _QTY_ONLY_RE.match(s)
+            if m:
+                return int(m.group("qty"))
+        return None
+
+    # Gather all positive money values after the first 'Rate' label; keep positions
+    first_rate_idx = next((idx for idx, l in enumerate(lines) if l.strip() == "Rate"), 0)
+    money_tokens: List[tuple[int, str]] = []  # (line_idx, value)
+    for li in range(first_rate_idx, len(lines)):
+        s = lines[li].strip()
+        if not s or "$(" in s:
+            continue
+        mvs = _MONEY_RE.findall(s)
+        for mv in mvs:
+            money_tokens.append((li, mv.replace(",", "")))
+
+    idx = 0
+    while idx < len(lines):
+        s = lines[idx].strip()
+        mcode = _ITEM_CODE_PREFIX_RE.match(s)
+        if not mcode:
+            idx += 1
             continue
 
-        quantity: Optional[int] = None
-        pack_ratio: Optional[str] = None
-        pack_units = ""
-        item_line_inline = ""
+        # Backtrack to get pack and qty
+        pack_ratio, pack_units, pack_idx = find_prev_pack(idx)
+        qty_val = find_prev_qty(pack_idx if pack_idx != -1 else idx)
+        if pack_ratio is None or qty_val is None:
+            idx += 1
+            continue
 
-        qty_pack_match = _QTY_PACK_RE.match(line)
-        if qty_pack_match:
-            # Parsed quantity and pack ratio from single line
-            quantity = int(qty_pack_match.group("qty"))
-            pack_ratio = qty_pack_match.group("pack").strip()
-            rest_after_pack = qty_pack_match.group("rest").strip()
-
-            if rest_after_pack:
-                oz_inline_match = re.search(r"\bOZ\b\.?", rest_after_pack)
-                if oz_inline_match:
-                    pack_units = "OZ"
-                    item_line_inline = rest_after_pack[oz_inline_match.end():].strip()
-                else:
-                    item_line_inline = rest_after_pack
-            else:
-                # Check next line for OZ
-                next_line = peek(1).strip()
-                if next_line.upper() in {"OZ", "OZ."}:
-                    pack_units = "OZ"
-                    i += 1  # consume the OZ line
-        else:
-            # Try PDF-style split where qty is alone on a line and pack is on next
-            qty_only = _QTY_ONLY_RE.match(line)
-            if not qty_only:
-                i += 1
+        # Build item name (current line name + short continuation lines)
+        name_parts: List[str] = [mcode.group("name").strip()]
+        fwd = idx + 1
+        while fwd < len(lines):
+            probe = _strip_oz_prefix(lines[fwd].strip())
+            if not probe:
+                fwd += 1
                 continue
-            quantity = int(qty_only.group("qty"))
-            # Find the next non-skip line containing the pack ratio
-            j = i + 1
-            while j < len(lines):
-                s = lines[j].strip()
-                if not s or _is_skip_line(s):
-                    j += 1
-                    continue
-                mpack = _PACK_ONLY_RE.match(s)
-                if mpack:
-                    pack_ratio = mpack.group("pack").strip()
-                    if mpack.group("oz"):
-                        pack_units = "OZ"
-                    j += 1
-                else:
-                    # If OZ is isolated on its own following line
-                    if s.upper() in {"OZ", "OZ."}:
-                        pack_units = "OZ"
-                        j += 1
-                    # Stop after examining first non-skip token
+            if _is_skip_line(probe):
+                fwd += 1
+                continue
+            if _ITEM_CODE_PREFIX_RE.match(probe):
                 break
-            if pack_ratio is None:
-                # Could not parse this as a real item block
-                i += 1
-                continue
-            # Advance index to the first line after the pack/oz info
-            i = j
+            if _PACK_ONLY_RE.match(probe) or _QTY_ONLY_RE.match(probe) or probe.startswith("$"):
+                break
+            # Avoid runaway names; keep to 2 lines max beyond the code line
+            name_parts.append(probe)
+            if len(name_parts) >= 3:
+                break
+            fwd += 1
 
+        # Compose pack size string
         pack_size = f"{pack_ratio}{(' ' + pack_units) if pack_units else ''}".strip()
 
-        # Resolve item name lines
-        item_name_parts: List[str] = []
-
-        def append_name_part(s: str) -> None:
-            s = s.strip()
-            if not s:
-                return
-            if not item_name_parts or item_name_parts[-1] != s:
-                item_name_parts.append(s)
-
-        # If there is inline content after units, try to parse item code/name from it
-        consumed_inline_item_line = False
-        if item_line_inline:
-            item_line_inline = _strip_oz_prefix(item_line_inline)
-            m_code = _ITEM_CODE_PREFIX_RE.match(item_line_inline)
-            if m_code:
-                append_name_part(m_code.group("name"))
-            else:
-                append_name_part(item_line_inline)
-            consumed_inline_item_line = True
-
-        # Advance to the first post-qty line if inline not used
-        i += 1
-
-        # If no inline item extracted, expect a line like "24921 Name..."
-        if not consumed_inline_item_line:
-            if i < len(lines):
-                first_item_line = _strip_oz_prefix(lines[i].strip())
-                # Some stray skip lines may appear; skip them
-                while i < len(lines) and (not first_item_line or _is_skip_line(first_item_line)):
-                    i += 1
-                    if i < len(lines):
-                        first_item_line = _strip_oz_prefix(lines[i].strip())
-                if i < len(lines):
-                    m_code_line = _ITEM_CODE_PREFIX_RE.match(first_item_line)
-                    if m_code_line:
-                        append_name_part(m_code_line.group("name"))
-                    else:
-                        append_name_part(first_item_line)
-                    i += 1
-
-        # Collect continuation lines until we hit pricing line (which starts with $) or next item starts
-        while i < len(lines):
-            probe = _strip_oz_prefix(lines[i].strip())
-            if not probe:
-                i += 1
-                continue
-            if probe.startswith("$"):
-                break
-            if _QTY_PACK_RE.match(probe) or _QTY_ONLY_RE.match(probe):
-                # Next item has begun unexpectedly, stop collecting name
-                break
-            if _is_skip_line(probe):
-                # discount blocks after pricing; but if encountered early, break out
-                i += 1
-                continue
-            append_name_part(probe)
-            i += 1
-
-        # Expect pricing line now
-        if i >= len(lines):
-            # No pricing found; skip incomplete entry
-            continue
-
-        # Gather pricing tokens across subsequent lines (PDF may split them)
-        found_prices: List[str] = []
-        k = i
-        while k < len(lines) and len(found_prices) < 2:
-            s = lines[k].strip()
-            if not s:
-                k += 1
-                continue
-            if _QTY_PACK_RE.match(s) or _QTY_ONLY_RE.match(s):
-                # Reached the next item; stop
-                break
-            if _is_skip_line(s):
-                k += 1
-                continue
-            # Ignore negative amounts like '$(11.16)'
-            if "$" in s and "$(" in s:
-                k += 1
-                continue
-            money_vals = _MONEY_RE.findall(s)
-            if money_vals:
-                for mv in money_vals:
-                    found_prices.append(mv)
-                    if len(found_prices) >= 2:
-                        break
-            k += 1
-
-        if not found_prices:
-            # Could not find prices; skip this block
-            i = max(i + 1, k)
-            continue
-
-        if len(found_prices) == 1:
-            rate_val = amount_val = found_prices[0]
+        # Compose item name (prefer the longest part covering others)
+        longest = max(name_parts, key=len)
+        if all(p.lower() in longest.lower() for p in name_parts):
+            item_name = longest
         else:
-            rate_val, amount_val = found_prices[0], found_prices[1]
+            item_name = " ".join(name_parts)
 
-        # Compose item name
-        # Prefer the longest part if it contains all other parts (handles duplicate/continuation cases)
-        if item_name_parts:
-            longest = max(item_name_parts, key=len)
-            if all(p.lower() in longest.lower() for p in item_name_parts):
-                item_name = longest
-            else:
-                # Fallback: join unique parts while removing immediate word duplicates
-                joined = " ".join(item_name_parts)
-                item_name = re.sub(r"\b(\w+)\s+\1\b", r"\1", joined, flags=re.IGNORECASE)
+        items_meta.append((idx, qty_val, pack_size, item_name))
+
+        idx = fwd + 1
+
+    # Second pass: assign prices using money tokens within a sliding window
+    code_indices = [m[0] for m in items_meta]
+    money_cursor = 0
+    for i, (code_idx, qty_val, pack_size, item_name) in enumerate(items_meta):
+        start = code_idx
+        end = code_indices[i + 2] if i + 2 < len(code_indices) else len(lines)
+        # Find first unused money token within [start, end)
+        pos = money_cursor
+        # advance to first token within window
+        while pos < len(money_tokens) and not (start <= money_tokens[pos][0] < end):
+            pos += 1
+        if pos >= len(money_tokens):
+            rate_val = amount_val = ""
         else:
-            item_name = ""
+            # rate token
+            rate_val = money_tokens[pos][1]
+            # find the next token within window after pos for amount
+            pos2 = pos + 1
+            while pos2 < len(money_tokens) and not (start <= money_tokens[pos2][0] < end):
+                pos2 += 1
+            if pos2 < len(money_tokens):
+                amount_val = money_tokens[pos2][1]
+                money_cursor = pos2 + 1
+            else:
+                amount_val = rate_val
+                money_cursor = pos + 1
+        if rate_val == "" and amount_val == "":
+            rate_val = amount_val = ""
 
         items.append(
             InvoiceItem(
-                quantity=quantity,
+                quantity=qty_val,
                 pack_size=pack_size,
                 item=item_name,
-                rate=rate_val.replace(",", ""),
-                amount=amount_val.replace(",", ""),
+                rate=rate_val,
+                amount=amount_val,
             )
         )
-
-        # Move index to after price scan
-        i = k
-        # Skip any discount/holiday lines following
-        while i < len(lines) and _is_skip_line(lines[i]):
-            i += 1
 
     return items
 
@@ -368,8 +284,6 @@ def write_csv(items: List[InvoiceItem], out_path: Path) -> None:
             "Price Each",
             "Store Price",
             "Online Price",
-            "Rate Category",
-            "Pack Size Category",
         ]
         writer.writerow(headers)
         for it in items:
@@ -387,8 +301,6 @@ def write_csv(items: List[InvoiceItem], out_path: Path) -> None:
                 fmt_money(price_each),
                 fmt_money(store_price),
                 fmt_money(online_price),
-                categorize_rate(rate_dec),
-                categorize_pack_count(pack_count),
             ])
 
 
