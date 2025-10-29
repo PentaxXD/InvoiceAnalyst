@@ -252,34 +252,16 @@ def parse_invoice_text(raw_text: str) -> List[InvoiceItem]:
 
         idx = fwd + 1
 
-    # Second pass: assign prices using money tokens within a sliding window
-    code_indices = [m[0] for m in items_meta]
+    # Second pass: assign prices globally, sequentially (Rate, Amount per item)
     money_cursor = 0
-    for i, (code_idx, qty_val, pack_size, item_name) in enumerate(items_meta):
-        start = code_idx
-        end = code_indices[i + 1] if (i + 1) < len(code_indices) else len(lines)
-        # Primary: scan forward within this item's block; collect first two positive prices
-        collected: List[str] = []
-        for li in range(start, end):
-            s = lines[li].strip()
-            if not s or "$(" in s:
-                continue
-            if _ITEM_CODE_PREFIX_RE.match(s) or _COMBINED_QTY_PACK_CODE_RE.match(s):
-                # Reached next item; stop
-                break
-            if "$" in s:
-                for mv in _MONEY_RE.findall(s):
-                    collected.append(mv.replace(",", ""))
-                    if len(collected) >= 2:
-                        break
-            if len(collected) >= 2:
-                break
-        if len(collected) >= 2:
-            rate_val, amount_val = collected[0], collected[1]
-        elif len(collected) == 1:
-            rate_val, amount_val = collected[0], collected[0]
-        else:
-            rate_val = amount_val = ""
+    for (_, qty_val, pack_size, item_name) in items_meta:
+        rate_val = amount_val = ""
+        if money_cursor < len(money_tokens):
+            rate_val = money_tokens[money_cursor][1]
+            money_cursor += 1
+        if money_cursor < len(money_tokens):
+            amount_val = money_tokens[money_cursor][1]
+            money_cursor += 1
 
         # Finalize quantity strictly from parsed qty line (do not derive from prices)
         final_qty: int = qty_val if qty_val is not None else 1
