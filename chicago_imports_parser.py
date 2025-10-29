@@ -257,7 +257,7 @@ def parse_invoice_text(raw_text: str) -> List[InvoiceItem]:
     money_cursor = 0
     for i, (code_idx, qty_val, pack_size, item_name) in enumerate(items_meta):
         start = code_idx
-        end = min(len(lines), code_idx + 200)
+        end = code_indices[i + 1] if (i + 1) < len(code_indices) else len(lines)
         # Primary: scan forward and pick a pair that matches the expected quantity if known
         Token = tuple[int, Decimal, str]
         local_tokens: List[Token] = []
