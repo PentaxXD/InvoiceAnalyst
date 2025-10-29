@@ -134,16 +134,15 @@ def parse_invoice_text(raw_text: str) -> List[InvoiceItem]:
                 return int(m.group("qty"))
         return None
 
-    # Gather all positive money values after the first 'Rate' label; keep positions
-    first_rate_idx = next((idx for idx, l in enumerate(lines) if l.strip() == "Rate"), 0)
-    money_tokens: List[tuple[int, str]] = []  # (line_idx, value)
-    for li in range(first_rate_idx, len(lines)):
+    # Gather money pairs: only lines with two positive $ amounts, in document order
+    money_pairs: List[tuple[int, str, str]] = []  # (line_idx, rate, amount)
+    for li in range(0, len(lines)):
         s = lines[li].strip()
         if not s or "$(" in s:
             continue
         mvs = _MONEY_RE.findall(s)
-        for mv in mvs:
-            money_tokens.append((li, mv.replace(",", "")))
+        if len(mvs) >= 2:
+            money_pairs.append((li, mvs[0].replace(",", ""), mvs[1].replace(",", "")))
 
     idx = 0
     while idx < len(lines):
@@ -252,15 +251,12 @@ def parse_invoice_text(raw_text: str) -> List[InvoiceItem]:
 
         idx = fwd + 1
 
-    # Second pass: assign prices globally, sequentially (Rate, Amount per item)
+    # Second pass: assign prices globally, sequentially by money pair lines
     money_cursor = 0
     for (_, qty_val, pack_size, item_name) in items_meta:
         rate_val = amount_val = ""
-        if money_cursor < len(money_tokens):
-            rate_val = money_tokens[money_cursor][1]
-            money_cursor += 1
-        if money_cursor < len(money_tokens):
-            amount_val = money_tokens[money_cursor][1]
+        if money_cursor < len(money_pairs):
+            _, rate_val, amount_val = money_pairs[money_cursor]
             money_cursor += 1
 
         # Finalize quantity strictly from parsed qty line (do not derive from prices)
