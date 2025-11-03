@@ -1,9 +1,4 @@
-"""Parser utilities for Stark invoice line items.
-
-This module focuses on robustly parsing item tables extracted from PDF
-invoices where descriptions may wrap across multiple lines while the
-quantity, unit price and amount values typically remain on the final line.
-"""
+"""Low-level invoice parsing utilities."""
 
 from __future__ import annotations
 
@@ -41,7 +36,12 @@ class InvoiceParsingError(ValueError):
 
 
 def _collapse_wrapped_lines(lines: Iterable[str]) -> List[str]:
-    """Combine wrapped description lines into single logical entries."""
+    """Combine wrapped description lines into single logical entries.
+
+    The Stark invoices often wrap descriptions across multiple lines while the
+    numeric columns remain on the final line. This function accumulates raw lines
+    until the full payload matches ``_LINE_PARSE_PATTERN``.
+    """
 
     combined: List[str] = []
     current_parts: List[str] = []
@@ -74,17 +74,7 @@ def _collapse_wrapped_lines(lines: Iterable[str]) -> List[str]:
 
 
 def parse_invoice_lines(text: str) -> List[InvoiceLine]:
-    """Parse raw invoice line text into structured ``InvoiceLine`` objects.
-
-    Args:
-        text: Raw text extracted from the invoice table (may include wraps).
-
-    Returns:
-        A list of ``InvoiceLine`` instances in the order they were provided.
-
-    Raises:
-        InvoiceParsingError: If any entry fails structured parsing.
-    """
+    """Parse raw invoice line text into structured ``InvoiceLine`` objects."""
 
     logical_lines = _collapse_wrapped_lines(text.splitlines())
     parsed: List[InvoiceLine] = []
@@ -121,19 +111,4 @@ def parse_invoice_lines(text: str) -> List[InvoiceLine]:
     return parsed
 
 
-def format_invoice_lines(lines: Iterable[InvoiceLine]) -> str:
-    """Pretty-print parsed invoice lines for quick verification."""
-
-    header = "CODE | SKU           | QTY | UNIT  | AMOUNT | DESCRIPTION"
-    rows = [header, "-" * len(header)]
-
-    for line in lines:
-        rows.append(
-            f"{line.item_code:<4}| {line.sku:<14}| {line.quantity:>3} | "
-            f"{line.unit_price:>6} | {line.amount:>7} | {line.description}"
-        )
-
-    return "\n".join(rows)
-
-
-__all__ = ["InvoiceLine", "InvoiceParsingError", "parse_invoice_lines", "format_invoice_lines"]
+__all__ = ["InvoiceLine", "InvoiceParsingError", "parse_invoice_lines"]
