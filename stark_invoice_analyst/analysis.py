@@ -153,19 +153,31 @@ def _token_allows_pack(token: str) -> bool:
     return stripped.upper() in _PACK_LEFT_JOINERS
 
 
-_UNIT_PATTERN = re.compile(r"\d+")
+_LEADING_UNIT_PATTERN = re.compile(r"(\d+)\s*/")
+_UNIT_SUFFIX_PATTERN = re.compile(
+    r"(\d+)\s*(?:PCS?|PACKS?|PACK|PKG|PKGS|STK|BAG|BOX|CT|EA|EACH|COUNT|BTL|BOTTLES?|CAN|CANS|JAR|JARS|LTR|L|ML|CL|G|KG|OZ|LB)\b",
+    re.IGNORECASE,
+)
+_UNIT_FALLBACK_PATTERN = re.compile(r"\d+")
 
 
 def _infer_units_per_case(pack_tokens: Sequence[str]) -> int | None:
+    text = " ".join(pack_tokens)
+
+    slash_match = _LEADING_UNIT_PATTERN.search(text)
+    if slash_match:
+        return int(slash_match.group(1))
+
+    suffix_match = _UNIT_SUFFIX_PATTERN.search(text)
+    if suffix_match:
+        return int(suffix_match.group(1))
+
     for token in pack_tokens:
-        match = _UNIT_PATTERN.search(token)
-        if match:
-            try:
-                value = int(match.group())
-            except ValueError:
-                continue
+        for match in _UNIT_FALLBACK_PATTERN.finditer(token):
+            value = int(match.group())
             if value > 0:
                 return value
+
     return None
 
 
