@@ -66,3 +66,24 @@ def test_parse_invoice_lines_handles_cross_page_headers_and_units():
     assert len(lines) == 3
     assert lines[1].description.endswith("15 / CS")
     assert lines[2].description.endswith("12 / 100 G. Kosher")
+
+
+def test_parse_invoice_lines_handles_hyphenated_pack_lines():
+    text = dedent(
+        """
+        Item
+        KRGS 0006
+
+        Knorr Gemuese Vegetable Bouillon 16L. / 6 PCS. -
+        CONTAINER
+
+        3
+        65.12
+        195.36
+        """
+    )
+
+    lines = parse_invoice_lines(text)
+
+    assert len(lines) == 1
+    assert lines[0].description.endswith("16L. / 6 PCS. - CONTAINER")

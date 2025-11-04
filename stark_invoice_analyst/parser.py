@@ -14,11 +14,18 @@ DECIMAL_PATTERN = re.compile(r"^\d{1,3}(?:,\d{3})*\.\d{2}$|^\d+\.\d{2}$")
 DIGIT_PATTERN = re.compile(r"\d")
 
 
+def _is_item_line(line: str) -> bool:
+    if not ITEM_PATTERN.match(line):
+        return False
+    prefix = line.split()[0]
+    return any(ch.isalpha() for ch in prefix)
+
+
 def _is_item_header(line: str) -> bool:
     upper = line.strip().upper()
     if not upper:
         return False
-    if ITEM_PATTERN.match(line):
+    if _is_item_line(line):
         return False
     return upper == "ITEM" or upper.startswith("ITEM ")
 
@@ -183,7 +190,7 @@ def _extract_sections(lines: Sequence[str]) -> Iterator[tuple[List[str], List[st
             if _is_item_header(current):
                 index += 1
                 continue
-            if ITEM_PATTERN.match(current):
+            if _is_item_line(current):
                 items.append(current)
                 index += 1
                 continue
@@ -199,6 +206,8 @@ def _extract_sections(lines: Sequence[str]) -> Iterator[tuple[List[str], List[st
             if not current:
                 index += 1
                 continue
+            if _is_item_line(current) or INTEGER_PATTERN.match(current) or DECIMAL_PATTERN.match(current):
+                break
             if current.upper() == "TOTAL":
                 index += 1
                 break
@@ -293,6 +302,8 @@ def _description_terminates(current: Sequence[str]) -> bool:
     if not DIGIT_PATTERN.search(candidate):
         return False
     if candidate.endswith('/'):
+        return False
+    if candidate.endswith('-'):
         return False
 
     upper = candidate.upper()
