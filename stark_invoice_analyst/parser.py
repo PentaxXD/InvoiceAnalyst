@@ -13,6 +13,44 @@ INTEGER_PATTERN = re.compile(r"^\d+$")
 DECIMAL_PATTERN = re.compile(r"^\d{1,3}(?:,\d{3})*\.\d{2}$|^\d+\.\d{2}$")
 DIGIT_PATTERN = re.compile(r"\d")
 
+
+def _is_item_header(line: str) -> bool:
+    upper = line.strip().upper()
+    if not upper:
+        return False
+    if ITEM_PATTERN.match(line):
+        return False
+    return upper == "ITEM" or upper.startswith("ITEM ")
+
+
+def _is_general_header(line: str) -> bool:
+    upper = line.strip().upper()
+    if not upper:
+        return True
+    header_prefixes = (
+        "DESCRIPTION",
+        "QUANTITY",
+        "PRICE",
+        "AMOUNT",
+        "TOTAL",
+        "PAGE",
+        "SUBTOTAL",
+        "DELIVERY",
+        "CLAIMS",
+        "INVOICE",
+        "DATE",
+        "BILL TO",
+        "SHIP TO",
+        "S.O.",
+        "P.O.",
+        "TERMS",
+        "REP",
+        "DUE DATE",
+        "SHIP DATE",
+        "SHIP VIA",
+    )
+    return upper.startswith(header_prefixes)
+
 PACK_TERMINATOR_TOKENS = {
     " G",
     "G.",
@@ -68,6 +106,8 @@ PACK_TERMINATOR_TOKENS = {
     "GRAM",
     "GRAMS",
 }
+
+PACK_UNIT_KEYWORDS = {token.strip().strip('.') for token in PACK_TERMINATOR_TOKENS if token.strip()}
 
 
 @dataclass
@@ -129,7 +169,7 @@ def _extract_sections(lines: Sequence[str]) -> Iterator[tuple[List[str], List[st
 
     while index < total_lines:
         line = lines[index]
-        if line.upper() != "ITEM":
+        if not _is_item_header(line):
             index += 1
             continue
 
@@ -138,6 +178,9 @@ def _extract_sections(lines: Sequence[str]) -> Iterator[tuple[List[str], List[st
         while index < total_lines:
             current = lines[index]
             if not current:
+                index += 1
+                continue
+            if _is_item_header(current):
                 index += 1
                 continue
             if ITEM_PATTERN.match(current):
@@ -162,6 +205,14 @@ def _extract_sections(lines: Sequence[str]) -> Iterator[tuple[List[str], List[st
             if current.upper().startswith("QUANTITY"):
                 index += 1
                 continue
+            if _is_item_header(current):
+                if description_lines:
+                    break
+                index += 1
+                continue
+            if _is_general_header(current):
+                index += 1
+                continue
             description_lines.append(current)
             index += 1
 
@@ -176,8 +227,11 @@ def _extract_sections(lines: Sequence[str]) -> Iterator[tuple[List[str], List[st
             if INTEGER_PATTERN.match(current):
                 quantities.append(int(current))
                 index += 1
-            else:
-                break
+                continue
+            if _is_general_header(current):
+                index += 1
+                continue
+            break
 
         unit_prices: List[Decimal] = []
         while index < total_lines and len(unit_prices) < len(items):
@@ -188,8 +242,11 @@ def _extract_sections(lines: Sequence[str]) -> Iterator[tuple[List[str], List[st
             if DECIMAL_PATTERN.match(current):
                 unit_prices.append(_to_decimal(current))
                 index += 1
-            else:
-                break
+                continue
+            if _is_general_header(current):
+                index += 1
+                continue
+            break
 
         amounts: List[Decimal] = []
         while index < total_lines and len(amounts) < len(items):
@@ -200,8 +257,11 @@ def _extract_sections(lines: Sequence[str]) -> Iterator[tuple[List[str], List[st
             if DECIMAL_PATTERN.match(current):
                 amounts.append(_to_decimal(current))
                 index += 1
-            else:
-                break
+                continue
+            if _is_general_header(current):
+                index += 1
+                continue
+            break
 
         if items:
             yield items, descriptions, quantities, unit_prices, amounts
@@ -213,7 +273,7 @@ def _group_descriptions(lines: Iterable[str], expected: int) -> List[str]:
 
     for line in lines:
         current.append(line)
-        if _description_terminates(line, current):
+        if _description_terminates(current):
             grouped.append(" ".join(current).strip())
             current = []
 
@@ -228,20 +288,27 @@ def _group_descriptions(lines: Iterable[str], expected: int) -> List[str]:
     return grouped
 
 
-def _description_terminates(line: str, current: Sequence[str]) -> bool:
-    stripped = line.strip()
-    if not DIGIT_PATTERN.search(stripped):
+def _description_terminates(current: Sequence[str]) -> bool:
+    candidate = " ".join(current).strip()
+    if not DIGIT_PATTERN.search(candidate):
         return False
-    if stripped.endswith('/'):
+    if candidate.endswith('/'):
         return False
 
-    upper = stripped.upper()
+    upper = candidate.upper()
     if any(token in upper for token in PACK_TERMINATOR_TOKENS):
         return True
 
-    if '/' in stripped:
-        slash_index = stripped.rfind('/')
-        if slash_index != -1 and any(ch.isdigit() for ch in stripped[slash_index + 1 :]):
+    if '/' in candidate:
+        pre, post = candidate.rsplit('/', 1)
+        post = post.strip()
+        if any(ch.isdigit() for ch in post):
+            return True
+        if post:
+            unit_token = post.split()[0].strip('.,')
+            if unit_token.upper() in PACK_UNIT_KEYWORDS:
+                return True
+        if DIGIT_PATTERN.search(pre):
             return True
 
     return False
