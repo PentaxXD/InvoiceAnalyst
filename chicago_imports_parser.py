@@ -58,22 +58,35 @@ class _RowAssembly:
             or not self.item_code
             or not self.description_parts
             or not self.pack_size_parts
-            or not self.case_price
-            or not self.unit_price
             or not self.extended_price
         ):
             return None
         description = _collapse_text(self.description_parts)
         pack_size = _collapse_text(self.pack_size_parts)
+        catch_weight = _collapse_text(self.catch_weight_parts)
+        case_price = self.case_price or ""
+        unit_price = self.unit_price or ""
+        extended_price = self.extended_price or ""
+
+        if catch_weight and case_price and case_price.startswith("$") and not unit_price:
+            unit_price = case_price
+            case_price = catch_weight
+        elif catch_weight and not case_price:
+            case_price = catch_weight
+
+        if not unit_price and case_price.startswith("$"):
+            unit_price = case_price
+            case_price = ""
+
         return InvoiceItem(
             order_qty=self.order_qty,
             shipped_qty=self.shipped_qty,
             item_code=self.item_code,
             description=description,
             pack_size=pack_size,
-            case_price=self.case_price,
-            unit_price=self.unit_price,
-            extended_price=self.extended_price,
+            case_price=case_price,
+            unit_price=unit_price,
+            extended_price=extended_price,
         )
 
 
