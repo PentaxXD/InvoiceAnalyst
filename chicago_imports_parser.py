@@ -410,7 +410,12 @@ def main() -> None:
     except ValueError as exc:
         raise SystemExit(f"Failed to parse invoice: {exc}")
 
-    out_path = args.output or (args.input.parent / f"{args.input.stem}_parsed.csv")
+    default_out = Path("output") / "invoice_items.csv"
+    if args.output:
+        out_path = args.output
+    else:
+        # Use output/invoice_items.csv by default to avoid recreating the source path tree
+        out_path = default_out
     write_csv(items, out_path)
 
 

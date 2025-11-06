@@ -9,7 +9,8 @@ from chicago_imports_parser import _read_input_text, parse_invoice_text, write_c
 
 def cmd_items(input_path: Path, out_path: Optional[Path], all_pages: bool, debug_trace_path: Optional[Path]) -> int:
     # all_pages is currently a no-op because we extract full text by default
-    out = (out_path or Path("invoice_items.csv")).resolve()
+    default_out = Path("output") / "invoice_items.csv"
+    out = (out_path or default_out).resolve()
     try:
         raw_text = _read_input_text(input_path)
         debug = [] if debug_trace_path else None
