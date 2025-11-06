@@ -4,463 +4,378 @@ from __future__ import annotations
 
 import argparse
 import csv
-import re
 import subprocess
 import sys
-from dataclasses import dataclass
-from decimal import Decimal, InvalidOperation, ROUND_FLOOR
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List, Optional, Dict, Any
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 
 @dataclass
 class InvoiceItem:
-    quantity: int
+    order_qty: int
+    shipped_qty: int
+    item_code: str
+    description: str
     pack_size: str
-    item: str
-    rate: str  # keep as string preserving cents formatting
-    amount: str  # keep as string preserving cents formatting
+    case_price: str
+    unit_price: str
+    extended_price: str
 
 
-HEADER_ANCHOR = "Quantity Pack Size Item Rate Amount"
+@dataclass
+class _TextFragment:
+    text: str
+    x0: float
+    x1: float
+    y0: float
+    y1: float
+    page: int
 
-# Patterns
-_QTY_PACK_RE = re.compile(r"^\s*(?P<qty>\d+)\s+(?P<pack>[0-9]+\/[0-9.]+)(?P<rest>.*)$")
-_QTY_ONLY_RE = re.compile(r"^\s*(?P<qty>\d+)\s*$")
-_PACK_ONLY_RE = re.compile(r"^\s*(?P<pack>[0-9]+\/[0-9.]+)\s*(?P<oz>OZ\.?)?\s*$", re.IGNORECASE)
-_MONEY_RE = re.compile(r"\$\s*(?P<val>[0-9,]+\.[0-9]{2})")
-_ITEM_CODE_PREFIX_RE = re.compile(r"^\s*(?P<code>\d{4,6})\s+(?P<name>.*\S)\s*$")
-_COMBINED_QTY_PACK_CODE_RE = re.compile(
-    r"^\s*(?P<qty>\d+)\s+(?P<pack>[0-9]+\/[0-9.]+)(?:\s*(?P<oz>OZ\.?))?\s+(?P<code>\d{4,6})\s+(?P<name>.*\S)\s*$",
-    re.IGNORECASE,
+    @property
+    def y_center(self) -> float:
+        return (self.y0 + self.y1) / 2.0
+
+
+@dataclass
+class _RowAssembly:
+    y: float
+    page: int
+    order_qty: Optional[int] = None
+    shipped_qty: Optional[int] = None
+    item_code: Optional[str] = None
+    description_parts: List[str] = field(default_factory=list)
+    pack_size_parts: List[str] = field(default_factory=list)
+    catch_weight_parts: List[str] = field(default_factory=list)
+    case_price: Optional[str] = None
+    unit_price: Optional[str] = None
+    extended_price: Optional[str] = None
+
+    def build_item(self) -> Optional[InvoiceItem]:
+        if (
+            self.order_qty is None
+            or self.shipped_qty is None
+            or not self.item_code
+            or not self.description_parts
+            or not self.pack_size_parts
+            or not self.case_price
+            or not self.unit_price
+            or not self.extended_price
+        ):
+            return None
+        description = _collapse_text(self.description_parts)
+        pack_size = _collapse_text(self.pack_size_parts)
+        return InvoiceItem(
+            order_qty=self.order_qty,
+            shipped_qty=self.shipped_qty,
+            item_code=self.item_code,
+            description=description,
+            pack_size=pack_size,
+            case_price=self.case_price,
+            unit_price=self.unit_price,
+            extended_price=self.extended_price,
+        )
+
+
+_ROW_Y_TOLERANCE = 16.0
+
+_COLUMN_RANGES: Dict[str, Tuple[float, float]] = {
+    "order": (30.0, 75.0),
+    "shipped": (75.0, 100.0),
+    "item": (100.0, 150.0),
+    "description": (150.0, 320.0),
+    "pack": (320.0, 380.0),
+    "catch": (380.0, 440.0),
+    "case": (440.0, 480.0),
+    "unit": (480.0, 520.0),
+    "extended": (520.0, 620.0),
+}
+
+_SKIP_EXACT = {
+    "Bill To",
+    "Ship To",
+    "Terms",
+    "Due Date",
+    "PO #",
+    "Customer",
+    "Contact",
+    "Shipping Method",
+    "Sales Order #",
+    "Customer #",
+    "Order",
+    "Qty",
+    "Shipped",
+    "Item",
+    "Description",
+    "Pack",
+    "Size",
+    "Catch",
+    "Wt.(LBS)",
+    "Case",
+    "Unit",
+    "Extended",
+    "Price",
+    "Net 20",
+    "PREORDER",
+    "Best Way",
+    "United States",
+}
+
+_SKIP_PREFIXES = (
+    "Invoice #",
+    "Date Shipped:",
+    "Total Due:",
+    "Date Due:",
+    "11/23/",
+    "SO",
+    "P:",
+    "chicagoimporting.com",
+    "11200 E.",
+    "Huntley IL",
 )
 
-# Lines to skip after item pricing
-_SKIP_EXACT = {
-    "CDISC-1004 Customer - Holiday Preorder": True,
-    "Holiday Preorder": True,
-    # Common column headers and meta text from PDF extraction
-    "Quantity": True,
-    "Pack Size": True,
-    "Item": True,
-    "Rate": True,
-    "Amount": True,
-    "Sales Order": True,
-    "Bill To": True,
-    "Ship To": True,
-    "TOTAL": True,
-    "Terms": True,
-    "Account": True,
-    "PO #": True,
-    "Shipping Method": True,
-    "OZ": True,
-}
-_SKIP_CONTAINS = [
-    "CDISC-1004 Customer - Holiday Preorder",
+_SKIP_CONTAINS = (
+    "CDISC-1004",
     "Holiday Preorder",
-    "Order Con",  # matches both 'Confirmation' and 'Conﬁrmation'
-    "Not an Invoice",
-]
+    "Customer - Holiday",
+)
 
 
-def _is_skip_line(line: str) -> bool:
-    s = line.strip()
-    if not s:
+def _collapse_text(parts: Iterable[str]) -> str:
+    return " ".join(p.strip() for p in parts if p.strip())
+
+
+def _ensure_pdfminer() -> Tuple[Any, Any, Any, Any, Any]:
+    try:
+        from pdfminer.high_level import extract_pages, extract_text  # type: ignore
+        from pdfminer.layout import LAParams, LTTextBoxHorizontal, LTTextLineHorizontal  # type: ignore
+    except Exception:
+        subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "pip",
+                "install",
+                "--user",
+                "--disable-pip-version-check",
+                "-q",
+                "pdfminer.six",
+            ],
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        from pdfminer.high_level import extract_pages, extract_text  # type: ignore
+        from pdfminer.layout import LAParams, LTTextBoxHorizontal, LTTextLineHorizontal  # type: ignore
+    return extract_pages, extract_text, LAParams, LTTextBoxHorizontal, LTTextLineHorizontal
+
+
+def _should_skip_fragment(text: str) -> bool:
+    stripped = text.strip()
+    if not stripped:
         return True
-    if s in _SKIP_EXACT:
+    if stripped in _SKIP_EXACT:
         return True
-    for token in _SKIP_CONTAINS:
-        if token in s:
+    for prefix in _SKIP_PREFIXES:
+        if stripped.startswith(prefix):
             return True
-    # discount percentage like "-5% $(11.16)"
-    if re.search(r"-\s*\d+%", s):
+    for token in _SKIP_CONTAINS:
+        if token in stripped:
+            return True
+    if stripped == "-5%":
         return True
-    # Pagination markers like "1 of 16"
-    if re.match(r"^\d+\s+of\s+\d+", s, flags=re.IGNORECASE):
+    if stripped.startswith("$("):
         return True
-    # Sales order id lines like SO2290048688
-    if re.search(r"\bSO\d+", s):
+    if stripped.lower().startswith("page "):
+        return True
+    if stripped.endswith(" of 11"):
+        return True
+    if stripped.replace(" ", "").lower().startswith("date shipped"):
         return True
     return False
 
 
-def _normalize_space(text: str) -> str:
-    # Keep line structure but trim trailing spaces
-    return "\n".join(line.rstrip() for line in text.splitlines())
+def _looks_like_discount_value(text: str) -> bool:
+    return text.startswith("$(")
 
 
-def parse_invoice_text(raw_text: str, debug_trace: Optional[List[Dict[str, Any]]] = None) -> List[InvoiceItem]:
-    text = _normalize_space(raw_text)
-    lines = text.splitlines()
+def _iter_text_lines(layout_obj: Any, line_class: Any) -> Iterable[Any]:
+    if isinstance(layout_obj, line_class):
+        yield layout_obj
+        return
+    if hasattr(layout_obj, "__iter__"):
+        for child in layout_obj:
+            yield from _iter_text_lines(child, line_class)
 
-    # Helpers
-    def _strip_oz_prefix(s: str) -> str:
-        return re.sub(r"^\s*OZ\.?\s+", "", s, flags=re.IGNORECASE)
 
-    def _norm_name(x: str) -> str:
-        x = x.replace("®", " ")
-        x = re.sub(r"\s+", " ", x)
-        return x.strip()
+def _collect_text_fragments(pdf_path: Path) -> List[_TextFragment]:
+    extract_pages, _, LAParams, _, LTTextLineHorizontal = _ensure_pdfminer()
+    laparams = LAParams(line_margin=0.10, char_margin=2.0, word_margin=0.1)
+    fragments: List[_TextFragment] = []
+    for page_number, page_layout in enumerate(extract_pages(str(pdf_path), laparams=laparams), start=1):
+        for line in _iter_text_lines(page_layout, LTTextLineHorizontal):
+            text = line.get_text().strip()
+            if not text:
+                continue
+            x0, y0, x1, y1 = line.bbox
+            fragments.append(_TextFragment(text=text, x0=x0, x1=x1, y0=y0, y1=y1, page=page_number))
+    return fragments
 
-    def is_item_header_combined(line: str) -> Optional[re.Match]:
-        return _COMBINED_QTY_PACK_CODE_RE.match(line)
 
-    def match_qty_pack(line: str) -> Optional[re.Match]:
-        # e.g., "2 10/3.5 OZ" or "2 10/3.5"
-        m = re.match(r"^\s*(?P<qty>\d+)\s+(?P<pack>[0-9]+\/[0-9.]+)(?:\s*(?P<oz>OZ\.?))?\s*$", line, flags=re.IGNORECASE)
-        return m
+def _looks_like_order_seed(frag: _TextFragment) -> bool:
+    if not frag.text.isdigit():
+        return False
+    lower, upper = _COLUMN_RANGES["order"]
+    return lower <= frag.x0 <= upper
 
-    def match_code_name(line: str) -> Optional[re.Match]:
-        return _ITEM_CODE_PREFIX_RE.match(line)
 
-    def is_qty_only(line: str) -> Optional[int]:
-        m = _QTY_ONLY_RE.match(line)
-        return int(m.group("qty")) if m else None
+def _find_row(rows: List[_RowAssembly], frag: _TextFragment) -> Optional[_RowAssembly]:
+    yc = frag.y_center
+    best: Optional[_RowAssembly] = None
+    best_delta = _ROW_Y_TOLERANCE
+    for row in rows:
+        if row.page != frag.page:
+            continue
+        delta = abs(row.y - yc)
+        if delta < best_delta:
+            best = row
+            best_delta = delta
+    return best
 
-    def is_header_start(line: str) -> bool:
-        return bool(is_item_header_combined(line) or match_qty_pack(line) or is_qty_only(line))
+
+def _parse_invoice_pdf(pdf_path: Path, debug_trace: Optional[List[Dict[str, Any]]]) -> List[InvoiceItem]:
+    fragments = _collect_text_fragments(pdf_path)
+    if not fragments:
+        return []
+
+    rows: List[_RowAssembly] = []
+    for frag in fragments:
+        if _looks_like_order_seed(frag):
+            rows.append(_RowAssembly(y=frag.y_center, page=frag.page, order_qty=int(frag.text)))
+
+    rows.sort(key=lambda r: (r.page, -r.y))
+    if not rows:
+        return []
+
+    for frag in fragments:
+        text = frag.text.strip()
+        if not text:
+            continue
+        if _should_skip_fragment(text):
+            continue
+
+        row = _find_row(rows, frag)
+        if row is None:
+            continue
+
+        x0 = frag.x0
+        if _COLUMN_RANGES["order"][0] <= x0 <= _COLUMN_RANGES["order"][1] and text.isdigit():
+            row.order_qty = int(text)
+        elif _COLUMN_RANGES["item"][0] <= x0 <= _COLUMN_RANGES["item"][1] and text.replace(" ", "").isdigit():
+            row.item_code = text.replace(" ", "")
+        elif _COLUMN_RANGES["shipped"][0] <= x0 <= _COLUMN_RANGES["shipped"][1] and text.isdigit():
+            row.shipped_qty = int(text)
+        elif _COLUMN_RANGES["pack"][0] <= x0 <= _COLUMN_RANGES["pack"][1]:
+            row.pack_size_parts.append(text)
+        elif _COLUMN_RANGES["description"][0] <= x0 <= _COLUMN_RANGES["description"][1]:
+            row.description_parts.append(text)
+        elif _COLUMN_RANGES["catch"][0] <= x0 <= _COLUMN_RANGES["catch"][1]:
+            row.catch_weight_parts.append(text)
+        elif _COLUMN_RANGES["case"][0] <= x0 <= _COLUMN_RANGES["case"][1]:
+            if not _looks_like_discount_value(text):
+                row.case_price = text
+        elif _COLUMN_RANGES["unit"][0] <= x0 <= _COLUMN_RANGES["unit"][1]:
+            if not _looks_like_discount_value(text):
+                row.unit_price = text
+        elif _COLUMN_RANGES["extended"][0] <= x0 <= _COLUMN_RANGES["extended"][1]:
+            if not _looks_like_discount_value(text):
+                row.extended_price = text
 
     items: List[InvoiceItem] = []
-    items_info: List[Dict[str, Any]] = []
-    i = 0
-    while i < len(lines):
-        line = lines[i].strip()
-        if not line:
-            i += 1
+    for row in rows:
+        item = row.build_item()
+        if item is None:
             continue
-        # Skip known non-item lines quickly
-        if _is_skip_line(line):
-            i += 1
-            continue
-
-        # Try combined header
-        mcomb = is_item_header_combined(line)
-        if mcomb:
-            qty = int(mcomb.group("qty"))
-            pack_ratio = mcomb.group("pack").strip()
-            pack_units = "OZ" if mcomb.group("oz") else ""
-            item_name = _norm_name(mcomb.group("name").strip())
-            header_idx = i
-            code_idx = i
-            i += 1
-        else:
-            # Try split header: qty+pack on this line, code on next non-skip line within 2 lines
-            mqp = match_qty_pack(line)
-            if mqp:
-                qty = int(mqp.group("qty"))
-                pack_ratio = mqp.group("pack").strip()
-                pack_units = "OZ" if mqp.group("oz") else ""
-                header_idx = i
-                # Allow optional OZ line on next line (already handled), then code line
-                j = i + 1
-                # Skip blank/skip lines up to 2 steps to find code
-                steps = 0
-                mcode = None
-                while j < len(lines) and steps <= 2:
-                    cand = _strip_oz_prefix(lines[j].strip())
-                    if not cand or _is_skip_line(cand):
-                        j += 1
-                        steps += 1
-                        continue
-                    mcode = match_code_name(cand)
-                    if mcode:
-                        break
-                    else:
-                        # Not a code-name; abort split header
-                        mcode = None
-                        break
-                if not mcode:
-                    i += 1
-                    continue
-                item_name = _norm_name(mcode.group("name").strip())
-                code_idx = j
-                # Advance i to first line after code
-                i = j + 1
-            else:
-                # Try split header variant: qty on its own line, then pack line next (or within 1), then optional OZ line, then code line
-                qty_only = is_qty_only(line)
-                if qty_only is not None:
-                    # find pack in next 2 lines
-                    j = i + 1
-                    pack_ratio = None
-                    pack_units = ""
-                    found_pack_at = -1
-                    for look in range(0, 2):
-                        if j + look >= len(lines):
-                            break
-                        cand = lines[j + look].strip()
-                        mp = _PACK_ONLY_RE.match(cand)
-                        if mp:
-                            pack_ratio = mp.group("pack").strip()
-                            if mp.group("oz"):
-                                pack_units = "OZ"
-                            found_pack_at = j + look
-                            break
-                    if pack_ratio is None:
-                        i += 1
-                        continue
-                    # Find code-name within next 2 non-skip lines after pack
-                    code_idx = -1
-                    mcode = None
-                    k = found_pack_at + 1
-                    hops = 0
-                    while k < len(lines) and hops <= 3:
-                        cand2 = _strip_oz_prefix(lines[k].strip())
-                        if not cand2 or _is_skip_line(cand2):
-                            k += 1
-                            hops += 1
-                            continue
-                        mcode = match_code_name(cand2)
-                        if mcode:
-                            code_idx = k
-                            break
-                        else:
-                            mcode = None
-                            break
-                    if not mcode:
-                        i += 1
-                        continue
-                    qty = qty_only
-                    item_name = _norm_name(mcode.group("name").strip())
-                    header_idx = i
-                    # advance i to after code line
-                    i = code_idx + 1
-                else:
-                    i += 1
-                    continue
-
-        pack_size = f"{pack_ratio}{(' ' + pack_units) if pack_units else ''}".strip()
-
-        # Defer price assignment to global sequential mapping
-        rate_val = ""
-        amount_val = ""
-        rate_line = -1
-        amount_line = -1
-
-        # Record item
-        items_info.append({
-            "qty": qty,
-            "pack_size": pack_size,
-            "item": item_name,
-            "rate": rate_val,
-            "amount": amount_val,
-            "rate_line": rate_line,
-            "amount_line": amount_line,
-        })
-
+        items.append(item)
         if debug_trace is not None:
-            debug_trace.append({
-                "header_idx": header_idx,
-                "code_idx": code_idx,
-                "qty": qty,
-                "pack_size": pack_size,
-                "item": item_name,
-                "rate": rate_val,
-                "amount": amount_val,
-                "rate_line": rate_line,
-                "amount_line": amount_line,
-            })
-
-    # Global assignment for missing prices: collect all positive $ tokens and map two per item
-    # Build token list
-    money_tokens: List[tuple[int, str]] = []
-    # Start after the first 'Rate' label to avoid totals/header noise
-    start_idx = 0
-    for idx_line, content in enumerate(lines):
-        if content.strip().lower() == 'rate':
-            start_idx = idx_line
-            break
-    for li in range(start_idx, len(lines)):
-        s = lines[li]
-        st = s.strip()
-        if not st or "$(" in st:
-            continue
-        for mv in _MONEY_RE.findall(st):
-            if f"$({mv})" in st:
-                continue
-            money_tokens.append((li, mv.replace(",", "")))
-    # Exclude tokens already used within-block
-    used_lines = set()
-    for info in items_info:
-        if info["rate_line"] >= 0:
-            used_lines.add(info["rate_line"])
-        if info["amount_line"] >= 0:
-            used_lines.add(info["amount_line"])
-    # Cursor over remaining tokens
-    cur = 0
-    def next_token() -> Optional[str]:
-        nonlocal cur
-        while cur < len(money_tokens):
-            li, val = money_tokens[cur]
-            cur += 1
-            if li in used_lines:
-                continue
-            return val
-        return None
-
-    for info in items_info:
-        if not info["rate"] or not info["amount"]:
-            if not info["rate"]:
-                t = next_token()
-                if t is not None:
-                    info["rate"] = t
-            if not info["amount"]:
-                t2 = next_token()
-                if t2 is not None:
-                    info["amount"] = t2
-            # If still missing amount but have rate and qty>1, compute
-            try:
-                if info["rate"] and not info["amount"] and info["qty"] > 1:
-                    rv = Decimal(info["rate"])
-                    info["amount"] = f"{(rv * Decimal(info["qty"])) .quantize(Decimal('0.01'))}"
-            except Exception:
-                pass
-
-    # Build final items
-    for info in items_info:
-        items.append(
-            InvoiceItem(
-                quantity=info["qty"],
-                pack_size=info["pack_size"],
-                item=info["item"],
-                rate=info["rate"],
-                amount=info["amount"],
+            debug_trace.append(
+                {
+                    "page": row.page,
+                    "y": row.y,
+                    "order_qty": row.order_qty,
+                    "shipped_qty": row.shipped_qty,
+                    "item_code": row.item_code,
+                    "description": _collapse_text(row.description_parts),
+                    "pack_size": _collapse_text(row.pack_size_parts),
+                    "case_price": row.case_price,
+                    "unit_price": row.unit_price,
+                    "extended_price": row.extended_price,
+                }
             )
-        )
 
     return items
+
+
+def _parse_invoice_text_block(raw_text: str) -> List[InvoiceItem]:
+    raise ValueError(
+        "Parsing raw text exports is not supported for the new invoice format; provide a PDF file instead."
+    )
+
+
+def parse_invoice_text(
+    raw_text: str,
+    *,
+    source_path: Optional[Path] = None,
+    debug_trace: Optional[List[Dict[str, Any]]] = None,
+) -> List[InvoiceItem]:
+    if source_path and source_path.suffix.lower() == ".pdf":
+        return _parse_invoice_pdf(source_path, debug_trace)
+    return _parse_invoice_text_block(raw_text)
 
 
 def write_csv(items: List[InvoiceItem], out_path: Path) -> None:
     out_path.parent.mkdir(parents=True, exist_ok=True)
     with out_path.open("w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
-        # Categorization helpers
-        def parse_pack_count(pack_size: str) -> Optional[int]:
-            m = re.match(r"^\s*(\d+)\s*/", pack_size)
-            return int(m.group(1)) if m else None
-
-        def categorize_pack_count(pack_count: Optional[int]) -> str:
-            if pack_count is None:
-                return "Unknown"
-            if pack_count <= 10:
-                return "Small Pack"
-            if pack_count <= 24:
-                return "Medium Pack"
-            if pack_count <= 60:
-                return "Large Pack"
-            return "Bulk Pack"
-
-        def parse_rate_decimal(rate: str) -> Optional[Decimal]:
-            try:
-                return Decimal(rate)
-            except (InvalidOperation, ValueError):
-                return None
-
-        def categorize_rate(rate_dec: Optional[Decimal]) -> str:
-            if rate_dec is None:
-                return "Unknown"
-            if rate_dec < Decimal("50"):
-                return "Low"
-            if rate_dec < Decimal("100"):
-                return "Medium"
-            if rate_dec < Decimal("200"):
-                return "High"
-            return "Premium"
-
-        def compute_price_each(rate_dec: Optional[Decimal], pack_count: Optional[int]) -> Optional[Decimal]:
-            if rate_dec is None or not pack_count or pack_count <= 0:
-                return None
-            return (rate_dec / Decimal(pack_count))
-
-        def round_to_next_9_cents(x: Decimal) -> Decimal:
-            # Find the smallest y >= x of the form N + k/10 + 0.09 (i.e., cents end with 9)
-            tenths_floor = (x * Decimal('10')).to_integral_value(rounding=ROUND_FLOOR) / Decimal('10')
-            candidate = tenths_floor + Decimal('0.09')
-            if candidate < x:
-                candidate = candidate + Decimal('0.10')
-            return candidate.quantize(Decimal('0.01'))
-
-        def fmt_money(d: Optional[Decimal]) -> str:
-            return f"{d.quantize(Decimal('0.01')):.2f}" if d is not None else ""
-
         headers = [
-            "Quantity",
-            "Pack Size",
+            "Order_Qty",
+            "Shipped_Qty",
             "Item",
-            "Rate",
-            "Amount",
-            "Price Each",
-            "Store Price",
-            "Online Price",
+            "Description",
+            "Pack_Size",
+            "Case_Price",
+            "Unit_Price",
+            "Extended_Price",
         ]
         writer.writerow(headers)
-        for it in items:
-            pack_count = parse_pack_count(it.pack_size)
-            rate_dec = parse_rate_decimal(it.rate)
-            price_each = compute_price_each(rate_dec, pack_count)
-            store_price = round_to_next_9_cents((price_each * Decimal('1.55') + Decimal('0.30'))) if price_each is not None else None
-            online_price = (store_price + Decimal('0.50')).quantize(Decimal('0.01')) if store_price is not None else None
-            writer.writerow([
-                it.quantity,
-                it.pack_size,
-                it.item,
-                it.rate,
-                it.amount,
-                fmt_money(price_each),
-                fmt_money(store_price),
-                fmt_money(online_price),
-            ])
-
-
-def _ensure_pdfminer_extract_text():
-    try:
-        from pdfminer.high_level import extract_text  # type: ignore
-        return extract_text
-    except Exception:
-        # Try installing pdfminer.six for the current user silently
-        try:
-            subprocess.run(
+        for item in items:
+            writer.writerow(
                 [
-                    sys.executable,
-                    "-m",
-                    "pip",
-                    "install",
-                    "--user",
-                    "--disable-pip-version-check",
-                    "-q",
-                    "pdfminer.six",
-                ],
-                check=True,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
+                    item.order_qty,
+                    item.shipped_qty,
+                    item.item_code,
+                    item.description,
+                    item.pack_size,
+                    item.case_price,
+                    item.unit_price,
+                    item.extended_price,
+                ]
             )
-            from pdfminer.high_level import extract_text  # type: ignore
-            return extract_text
-        except Exception:
-            return None
 
 
 def _read_input_text(input_path: Path) -> str:
     suffix = input_path.suffix.lower()
     if suffix == ".pdf":
-        extract_text = _ensure_pdfminer_extract_text()
-        if extract_text is None:
-            # As a last resort, return empty text; caller will still write headers
-            return ""
+        _, extract_text, _, _, _ = _ensure_pdfminer()
         return extract_text(str(input_path))
-    # default: treat as text
     return input_path.read_text(encoding="utf-8", errors="ignore")
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description=(
-            "Parse Chicago Imports invoice text into CSV. "
-            "Starts at 'Quantity Pack Size Item Rate Amount', and excludes CDISC/Holiday discount lines."
-        )
+        description="Parse Chicago Imports invoice PDFs into CSV using the newer format layout",
     )
-    parser.add_argument("input", type=Path, help="Path to input .txt or .pdf")
+    parser.add_argument("input", type=Path, help="Path to input .pdf (or .txt for legacy exports)")
     parser.add_argument(
         "-o",
         "--output",
@@ -474,7 +389,11 @@ def main() -> None:
         raise SystemExit(f"Input file not found: {args.input}")
 
     raw_text = _read_input_text(args.input)
-    items = parse_invoice_text(raw_text)
+    try:
+        items = parse_invoice_text(raw_text, source_path=args.input)
+    except ValueError as exc:
+        raise SystemExit(f"Failed to parse invoice: {exc}")
+
     out_path = args.output or (args.input.parent / f"{args.input.stem}_parsed.csv")
     write_csv(items, out_path)
 

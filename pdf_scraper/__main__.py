@@ -13,10 +13,11 @@ def cmd_items(input_path: Path, out_path: Optional[Path], all_pages: bool, debug
     try:
         raw_text = _read_input_text(input_path)
         debug = [] if debug_trace_path else None
-        items = parse_invoice_text(raw_text, debug_trace=debug)
+        items = parse_invoice_text(raw_text, source_path=input_path, debug_trace=debug)
     except Exception:
         # Always produce a CSV file even if parsing fails
         items = []
+        debug = [] if debug_trace_path else None
     try:
         write_csv(items, out)
         if debug_trace_path and isinstance(debug, list):
@@ -25,11 +26,30 @@ def cmd_items(input_path: Path, out_path: Optional[Path], all_pages: bool, debug
             dp = debug_trace_path.resolve()
             with dp.open('w', newline='', encoding='utf-8') as f:
                 w = csv.writer(f)
-                w.writerow(["header_idx","code_idx","qty","pack_size","item","rate","amount","rate_line","amount_line"])
+                w.writerow([
+                    "page",
+                    "y",
+                    "order_qty",
+                    "shipped_qty",
+                    "item_code",
+                    "description",
+                    "pack_size",
+                    "case_price",
+                    "unit_price",
+                    "extended_price",
+                ])
                 for row in debug:
                     w.writerow([
-                        row.get("header_idx",""), row.get("code_idx",""), row.get("qty",""), row.get("pack_size",""),
-                        row.get("item",""), row.get("rate",""), row.get("amount",""), row.get("rate_line",""), row.get("amount_line",""),
+                        row.get("page", ""),
+                        row.get("y", ""),
+                        row.get("order_qty", ""),
+                        row.get("shipped_qty", ""),
+                        row.get("item_code", ""),
+                        row.get("description", ""),
+                        row.get("pack_size", ""),
+                        row.get("case_price", ""),
+                        row.get("unit_price", ""),
+                        row.get("extended_price", ""),
                     ])
     finally:
         # Print absolute output path for clarity
