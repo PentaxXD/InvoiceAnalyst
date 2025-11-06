@@ -7,6 +7,7 @@ import csv
 import subprocess
 import sys
 from dataclasses import dataclass, field
+from decimal import Decimal, InvalidOperation, ROUND_FLOOR
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
@@ -18,9 +19,13 @@ class InvoiceItem:
     item_code: str
     description: str
     pack_size: str
+    pack_quantity: Optional[int]
+    product_size: str
     case_price: str
     unit_price: str
     extended_price: str
+    store_price: str
+    online_price: str
 
 
 @dataclass
@@ -63,23 +68,34 @@ class _RowAssembly:
             return None
         description = _collapse_text(self.description_parts)
         pack_size = _collapse_text(self.pack_size_parts)
-        catch_weight = _collapse_text(self.catch_weight_parts)
         case_price = self.case_price or ""
         unit_price = self.unit_price or ""
         extended_price = self.extended_price or ""
 
-        if catch_weight and case_price and case_price.startswith("$") and not unit_price:
-            unit_price = case_price
-            case_price = catch_weight
-        elif catch_weight and not case_price:
-            case_price = catch_weight
-
-        if not unit_price and case_price.startswith("$"):
-            unit_price = case_price
-            case_price = ""
+        pack_quantity, product_size = _parse_pack_details(pack_size)
 
         if not unit_price.strip():
             unit_price = "N/A"
+        if not case_price.strip():
+            case_price = ""
+
+        store_price_value: Optional[Decimal] = None
+        online_price_value: Optional[Decimal] = None
+        case_price_dec = _parse_decimal(case_price)
+        if case_price_dec is not None and pack_quantity and pack_quantity > 0:
+            try:
+                price_each = case_price_dec / Decimal(pack_quantity)
+                store_base = price_each * Decimal("1.55") + Decimal("0.30")
+                store_price_value = _round_to_next_9_cents(store_base)
+                online_price_value = (store_price_value + Decimal("0.50")).quantize(Decimal("0.01"))
+            except (InvalidOperation, ZeroDivisionError):
+                store_price_value = None
+                online_price_value = None
+
+        store_price = _fmt_price(store_price_value)
+        online_price = _fmt_price(online_price_value)
+        if store_price == "N/A":
+            online_price = "N/A"
 
         return InvoiceItem(
             order_qty=self.order_qty,
@@ -87,9 +103,13 @@ class _RowAssembly:
             item_code=self.item_code,
             description=description,
             pack_size=pack_size,
+            pack_quantity=pack_quantity,
+            product_size=product_size,
             case_price=case_price,
             unit_price=unit_price,
             extended_price=extended_price,
+            store_price=store_price,
+            online_price=online_price,
         )
 
 
@@ -159,6 +179,59 @@ _SKIP_CONTAINS = (
 
 def _collapse_text(parts: Iterable[str]) -> str:
     return " ".join(p.strip() for p in parts if p.strip())
+
+
+def _parse_pack_details(pack_size: str) -> Tuple[Optional[int], str]:
+    if not pack_size:
+        return None, ""
+    if "/" not in pack_size:
+        return None, pack_size.strip()
+    qty_part, remainder = pack_size.split("/", 1)
+    qty_part = qty_part.strip()
+    try:
+        qty = int(qty_part)
+    except ValueError:
+        qty = None
+    product_size = remainder.strip()
+    return qty, product_size
+
+
+def _parse_decimal(value: str) -> Optional[Decimal]:
+    if not value:
+        return None
+    v = value.strip()
+    if not v or v.upper() == "N/A":
+        return None
+    is_negative = False
+    if v.startswith("(") and v.endswith(")"):
+        is_negative = True
+        v = v[1:-1]
+    if v.startswith("$"):
+        v = v[1:]
+    v = v.replace(",", "")
+    if not v:
+        return None
+    try:
+        d = Decimal(v)
+    except InvalidOperation:
+        return None
+    if is_negative:
+        d = -d
+    return d
+
+
+def _round_to_next_9_cents(value: Decimal) -> Decimal:
+    tenths_floor = (value * Decimal("10")).to_integral_value(rounding=ROUND_FLOOR) / Decimal("10")
+    candidate = tenths_floor + Decimal("0.09")
+    if candidate < value:
+        candidate += Decimal("0.10")
+    return candidate.quantize(Decimal("0.01"))
+
+
+def _fmt_price(value: Optional[Decimal]) -> str:
+    if value is None:
+        return "N/A"
+    return f"{value.quantize(Decimal('0.01')):.2f}"
 
 
 def _ensure_pdfminer() -> Tuple[Any, Any, Any, Any, Any]:
@@ -318,14 +391,18 @@ def _parse_invoice_pdf(pdf_path: Path, debug_trace: Optional[List[Dict[str, Any]
                 {
                     "page": row.page,
                     "y": row.y,
-                    "order_qty": row.order_qty,
-                    "shipped_qty": row.shipped_qty,
-                    "item_code": row.item_code,
-                    "description": _collapse_text(row.description_parts),
-                    "pack_size": _collapse_text(row.pack_size_parts),
-                    "case_price": row.case_price,
-                    "unit_price": row.unit_price,
-                    "extended_price": row.extended_price,
+                    "order_qty": item.order_qty,
+                    "shipped_qty": item.shipped_qty,
+                    "item_code": item.item_code,
+                    "description": item.description,
+                    "pack_size": item.pack_size,
+                    "pack_quantity": item.pack_quantity if item.pack_quantity is not None else "",
+                    "product_size": item.product_size,
+                    "case_price": item.case_price,
+                    "unit_price": item.unit_price,
+                    "extended_price": item.extended_price,
+                    "store_price": item.store_price,
+                    "online_price": item.online_price,
                 }
             )
 
@@ -359,9 +436,13 @@ def write_csv(items: List[InvoiceItem], out_path: Path) -> None:
             "Item",
             "Description",
             "Pack_Size",
+            "Pack_Quantity",
+            "Product_Size",
             "Case_Price",
             "Unit_Price",
             "Extended_Price",
+            "Store_Price",
+            "Online_Price",
         ]
         writer.writerow(headers)
         for item in items:
@@ -372,9 +453,13 @@ def write_csv(items: List[InvoiceItem], out_path: Path) -> None:
                     item.item_code,
                     item.description,
                     item.pack_size,
+                    item.pack_quantity if item.pack_quantity is not None else "",
+                    item.product_size,
                     item.case_price,
                     item.unit_price,
                     item.extended_price,
+                    item.store_price,
+                    item.online_price,
                 ]
             )
 

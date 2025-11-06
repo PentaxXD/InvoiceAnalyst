@@ -12,7 +12,13 @@ for idx, item in enumerate(items[:10], start=1):
         '|',
         item.description,
         '|',
+        item.pack_quantity,
+        item.product_size,
+        '|',
         item.case_price,
         item.unit_price,
         item.extended_price,
+        '|',
+        item.store_price,
+        item.online_price,
     )

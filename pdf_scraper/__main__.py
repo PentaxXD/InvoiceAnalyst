@@ -35,9 +35,13 @@ def cmd_items(input_path: Path, out_path: Optional[Path], all_pages: bool, debug
                     "item_code",
                     "description",
                     "pack_size",
+                    "pack_quantity",
+                    "product_size",
                     "case_price",
                     "unit_price",
                     "extended_price",
+                    "store_price",
+                    "online_price",
                 ])
                 for row in debug:
                     w.writerow([
@@ -48,9 +52,13 @@ def cmd_items(input_path: Path, out_path: Optional[Path], all_pages: bool, debug
                         row.get("item_code", ""),
                         row.get("description", ""),
                         row.get("pack_size", ""),
+                        row.get("pack_quantity", ""),
+                        row.get("product_size", ""),
                         row.get("case_price", ""),
                         row.get("unit_price", ""),
                         row.get("extended_price", ""),
+                        row.get("store_price", ""),
+                        row.get("online_price", ""),
                     ])
     finally:
         # Print absolute output path for clarity
