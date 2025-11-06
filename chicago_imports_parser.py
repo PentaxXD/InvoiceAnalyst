@@ -78,6 +78,9 @@ class _RowAssembly:
             unit_price = case_price
             case_price = ""
 
+        if not unit_price.strip():
+            unit_price = "N/A"
+
         return InvoiceItem(
             order_qty=self.order_qty,
             shipped_qty=self.shipped_qty,
