@@ -1,3 +1,4 @@
+from decimal import Decimal
 from pathlib import Path
 
 from stark_invoice_analyst.parser import parse_invoice_lines
@@ -38,3 +39,22 @@ def test_parse_invoice_lines_retains_hyphenated_pack_information():
     target = next(line for line in lines if line.item_code == "KRGS" and line.sku == "0006-65555")
 
     assert target.description.endswith("16L. / 6 PCS. - CONTAINER")
+
+
+def test_parse_invoice_lines_handles_split_numeric_columns():
+    text = "\n".join(
+        [
+            "Item",
+            "AP 0001 SAMPLE PRODUCT 10 / 100 G.",
+            "3",
+            "27.90",
+            "83.70",
+        ]
+    )
+
+    lines = parse_invoice_lines(text)
+
+    assert len(lines) == 1
+    assert lines[0].quantity == 3
+    assert lines[0].unit_price == Decimal("27.90")
+    assert lines[0].amount == Decimal("83.70")

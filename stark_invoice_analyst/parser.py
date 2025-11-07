@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from decimal import Decimal
 import re
-from typing import Iterable, Iterator, List
+from typing import Iterable, Iterator, List, Optional, Tuple
 
 
 ITEM_START_PATTERN = re.compile(r"^(?P<code>[A-Z]{2,4})\s+(?P<sku>[A-Z0-9][A-Z0-9-]*)\b")
@@ -14,6 +14,7 @@ NUMERIC_TAIL_PATTERN = re.compile(
     r"(?P<unit_price>\d{1,3}(?:,\d{3})*\.\d{2}|\d+\.\d{2})\s+"
     r"(?P<amount>\d{1,3}(?:,\d{3})*\.\d{2}|\d+\.\d{2})$"
 )
+NUMERIC_LINE_PATTERN = re.compile(r"^[\d\s.,-]+$")
 
 
 @dataclass
@@ -82,7 +83,7 @@ def _iter_item_blocks(lines: Iterable[str]) -> Iterator[List[str]]:
 
 
 def _block_has_numeric_tail(block: List[str]) -> bool:
-    return any(NUMERIC_TAIL_PATTERN.search(line) for line in block)
+    return _collect_numeric_tail(block) is not None
 
 
 def _parse_block(block: List[str]) -> InvoiceLine:
@@ -91,27 +92,17 @@ def _parse_block(block: List[str]) -> InvoiceLine:
     if not first_match:
         raise InvoiceParsingError(f"Unable to identify item code in {first_line!r}")
 
-    numeric_index = None
-    numeric_prefix = ""
-    quantity = unit_price = amount = None
-
-    for index in range(len(block) - 1, -1, -1):
-        numeric_match = NUMERIC_TAIL_PATTERN.search(block[index])
-        if numeric_match:
-            numeric_index = index
-            numeric_prefix = block[index][: numeric_match.start()]
-            quantity = int(numeric_match.group("quantity"))
-            unit_price = _to_decimal(numeric_match.group("unit_price"))
-            amount = _to_decimal(numeric_match.group("amount"))
-            break
-
-    if numeric_index is None or quantity is None or unit_price is None or amount is None:
+    numeric_info = _collect_numeric_tail(block)
+    if numeric_info is None:
         raise InvoiceParsingError(f"Unable to locate numeric columns for {first_line!r}")
 
+    quantity, unit_price, amount, start_index, inline_match = numeric_info
+
     description_parts: List[str] = []
-    if numeric_index == 0:
-        tail_start = first_match.end()
-        fragment = numeric_prefix[tail_start:].strip()
+
+    if start_index == 0:
+        end_idx = inline_match.start() if inline_match else len(block[0])
+        fragment = first_line[first_match.end():end_idx].strip()
         if fragment:
             description_parts.append(fragment)
     else:
@@ -119,14 +110,15 @@ def _parse_block(block: List[str]) -> InvoiceLine:
         if remainder:
             description_parts.append(remainder)
 
-        for line in block[1:numeric_index]:
+        for line in block[1:start_index]:
             cleaned = line.strip()
             if cleaned:
                 description_parts.append(cleaned)
 
-        trimmed_prefix = numeric_prefix.strip()
-        if trimmed_prefix:
-            description_parts.append(trimmed_prefix)
+        if inline_match:
+            prefix = block[start_index][: inline_match.start()].strip()
+            if prefix:
+                description_parts.append(prefix)
 
     description = " ".join(part.strip() for part in description_parts if part.strip())
 
@@ -143,6 +135,41 @@ def _parse_block(block: List[str]) -> InvoiceLine:
 def _to_decimal(value: str) -> Decimal:
     normalized = value.replace(",", "")
     return Decimal(normalized)
+
+
+def _collect_numeric_tail(
+    block: List[str],
+) -> Optional[Tuple[int, Decimal, Decimal, int, Optional[re.Match[str]]]]:
+    tokens: List[str] = []
+    first_numeric_index: Optional[int] = None
+
+    for index in range(len(block) - 1, -1, -1):
+        line = block[index]
+        match = NUMERIC_TAIL_PATTERN.search(line)
+        if match:
+            quantity = int(match.group("quantity").replace(",", ""))
+            unit_price = _to_decimal(match.group("unit_price"))
+            amount = _to_decimal(match.group("amount"))
+            return quantity, unit_price, amount, index, match
+
+        if NUMERIC_LINE_PATTERN.match(line):
+            first_numeric_index = index
+            parts = line.split()
+            tokens = parts + tokens
+            if len(tokens) >= 3:
+                try:
+                    quantity = int(tokens[-3].replace(",", ""))
+                    unit_price = _to_decimal(tokens[-2])
+                    amount = _to_decimal(tokens[-1])
+                except (ValueError, ArithmeticError):
+                    continue
+                return quantity, unit_price, amount, first_numeric_index, None
+            continue
+
+        if tokens:
+            break
+
+    return None
 
 
 __all__ = ["InvoiceLine", "InvoiceParsingError", "parse_invoice_lines"]
