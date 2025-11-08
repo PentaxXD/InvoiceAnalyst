@@ -1,11 +1,11 @@
-"""High-level analysis utilities for Stark invoices."""
+"""High-level invoice analysis for Stark invoices."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from decimal import Decimal, ROUND_HALF_UP
 import re
-from typing import Iterable, List, Sequence
+from typing import List
 
 from .parser import InvoiceLine, parse_invoice_lines
 
@@ -13,36 +13,58 @@ from .parser import InvoiceLine, parse_invoice_lines
 DEFAULT_STORE_MARKUP = Decimal("1.68")
 DEFAULT_ONLINE_MARKUP = Decimal("1.86")
 
-_PACK_LEFT_JOINERS = {
+UNIT_PATTERN = re.compile(
+    r"(\d+)\s*(?:/|x|X)?\s*(?:PCS?|PACKS?|PACK|PKG|PKGS|EA|EACH|COUNT|BTL|BOTTLES?|"
+    r"CAN|CANS|JAR|JARS|BAG|BOX|STK|CS|CT|PKS?|L|LTR|ML|CL|G|KG|OZ|LB)\b",
+    re.IGNORECASE,
+)
+PACK_KEYWORDS = {
     "/",
-    "x",
     "X",
     "PCS",
     "PCS.",
     "PACK",
     "PACKS",
+    "PKG",
+    "PKGS",
+    "PK",
+    "PKS",
+    "EA",
+    "EACH",
+    "COUNT",
+    "BTL",
+    "BTLS",
+    "BOTTLE",
+    "BOTTLES",
+    "CAN",
+    "CANS",
+    "JAR",
+    "JARS",
+    "BAG",
+    "BAGS",
+    "BOX",
+    "BOXES",
     "STK",
-    "STK.",
     "CS",
+    "CT",
+    "L",
+    "LTR",
+    "ML",
+    "CL",
     "G",
     "G.",
     "KG",
     "OZ",
-    "OZ.",
     "LB",
-    "L",
-    "L.",
-    "ML",
-    "CL",
-    "GLASS",
-    "CONTAINER",
     "KOSHER",
+    "CONTAINER",
+    "GLASS",
 }
 
 
 @dataclass
 class AnalyzedLine:
-    """Represents an analyzed invoice line ready for export."""
+    """Computed invoice information ready for export."""
 
     item: str
     description: str
@@ -55,8 +77,6 @@ class AnalyzedLine:
     online_price: Decimal
 
     def to_csv_row(self) -> dict[str, str]:
-        """Return a CSV-friendly mapping of the line contents."""
-
         return {
             "Item": self.item,
             "Description": self.description,
@@ -76,29 +96,32 @@ def analyze_invoice_text(
     store_markup: Decimal | float = DEFAULT_STORE_MARKUP,
     online_markup: Decimal | float = DEFAULT_ONLINE_MARKUP,
 ) -> List[AnalyzedLine]:
-    """Parse raw invoice text and compute the derived pricing fields."""
+    """Parse raw text and calculate pricing information."""
 
-    store_markup = _coerce_decimal(store_markup)
-    online_markup = _coerce_decimal(online_markup)
+    store_multiplier = _as_decimal(store_markup)
+    online_multiplier = _as_decimal(online_markup)
 
-    lines = parse_invoice_lines(text)
+    parsed_lines = parse_invoice_lines(text)
     analyzed: List[AnalyzedLine] = []
 
-    for raw_line in lines:
-        description, pack_size, pack_tokens = _split_description(raw_line.description)
-        units_per_case = _infer_units_per_case(pack_tokens) or 1
-        price_each_product = _quantize(raw_line.unit_price / Decimal(units_per_case))
-        store_price = _quantize(price_each_product * store_markup)
-        online_price = _quantize(price_each_product * online_markup)
+    for raw in parsed_lines:
+        description, pack_size = _split_description(raw.description)
+        units = max(_infer_units(pack_size), 1)
+
+        unit_price = _quantize(raw.unit_price)
+        amount = _quantize(raw.amount)
+        price_each_product = _quantize(raw.unit_price / Decimal(units))
+        store_price = _quantize(price_each_product * store_multiplier)
+        online_price = _quantize(price_each_product * online_multiplier)
 
         analyzed.append(
             AnalyzedLine(
-                item=f"{raw_line.item_code} {raw_line.sku}",
-                description=_normalize_description(description),
+                item=f"{raw.item_code} {raw.sku}",
+                description=_title_case(description),
                 pack_size=pack_size,
-                quantity=raw_line.quantity,
-                price_each=_quantize(raw_line.unit_price),
-                amount=_quantize(raw_line.amount),
+                quantity=raw.quantity,
+                price_each=unit_price,
+                amount=amount,
                 price_each_product=price_each_product,
                 store_price=store_price,
                 online_price=online_price,
@@ -108,95 +131,92 @@ def analyze_invoice_text(
     return analyzed
 
 
-def _split_description(description: str) -> tuple[str, str, Sequence[str]]:
-    """Split a raw description into the readable portion and pack size."""
-
-    tokens = description.split()
-    if not tokens:
-        return description, "", []
-
-    last_digit_index = _find_last_digit_index(tokens)
-    if last_digit_index is None:
-        cleaned = description.strip().rstrip("/")
-        return cleaned, "", []
-
-    start_index = last_digit_index
-    while start_index > 0:
-        candidate = tokens[start_index - 1]
-        if _token_allows_pack(candidate):
-            start_index -= 1
-        else:
-            break
-
-    pack_tokens = tokens[start_index:]
-    desc_tokens = tokens[:start_index]
-
-    pack_size = " ".join(pack_tokens).strip(" ,")
-    clean_description = " ".join(desc_tokens).strip(" ,/")
-
-    return clean_description or description.strip(), pack_size, pack_tokens
-
-
-def _find_last_digit_index(tokens: Sequence[str]) -> int | None:
-    for index in range(len(tokens) - 1, -1, -1):
-        if any(ch.isdigit() for ch in tokens[index]):
-            return index
-    return None
-
-
-def _token_allows_pack(token: str) -> bool:
-    stripped = token.strip(",.")
-    if not stripped:
-        return False
-    if any(ch.isdigit() for ch in stripped):
-        return True
-    return stripped.upper() in _PACK_LEFT_JOINERS
-
-
-_LEADING_UNIT_PATTERN = re.compile(r"(\d+)\s*/")
-_UNIT_SUFFIX_PATTERN = re.compile(
-    r"(\d+)\s*(?:PCS?|PACKS?|PACK|PKG|PKGS|STK|BAG|BOX|CT|EA|EACH|COUNT|BTL|BOTTLES?|CAN|CANS|JAR|JARS|LTR|L|ML|CL|G|KG|OZ|LB)\b",
-    re.IGNORECASE,
-)
-_UNIT_FALLBACK_PATTERN = re.compile(r"\d+")
-
-
-def _infer_units_per_case(pack_tokens: Sequence[str]) -> int | None:
-    text = " ".join(pack_tokens)
-
-    slash_match = _LEADING_UNIT_PATTERN.search(text)
-    if slash_match:
-        return int(slash_match.group(1))
-
-    suffix_match = _UNIT_SUFFIX_PATTERN.search(text)
-    if suffix_match:
-        return int(suffix_match.group(1))
-
-    for token in pack_tokens:
-        for match in _UNIT_FALLBACK_PATTERN.finditer(token):
-            value = int(match.group())
-            if value > 0:
-                return value
-
-    return None
-
-
-def _normalize_description(description: str) -> str:
+def _split_description(description: str) -> tuple[str, str]:
     if not description:
+        return "", ""
+
+    tokens = description.strip().split()
+    if not tokens:
+        return description.strip(), ""
+
+    pack_tokens: List[str] = []
+    for token in reversed(tokens):
+        if _is_pack_token(token, pack_tokens):
+            pack_tokens.append(token)
+            continue
+        break
+
+    pack_tokens.reverse()
+    if not pack_tokens:
+        return description.strip(), ""
+
+    desc_length = len(tokens) - len(pack_tokens)
+    base_tokens = tokens[:desc_length]
+
+    base = " ".join(base_tokens).strip(" ,-/")
+    pack = " ".join(pack_tokens).strip(" ,")
+    return base or description.strip(), pack
+
+
+def _is_pack_token(token: str, current: List[str]) -> bool:
+    normalized = token.strip(",.")
+    if not normalized:
+        return False
+
+    if any(ch.isdigit() for ch in normalized):
+        return True
+
+    upper = normalized.upper()
+    if upper in PACK_KEYWORDS:
+        return True
+
+    if current and upper in {"-", "&"}:
+        return True
+
+    return False
+
+
+def _infer_units(pack: str) -> int:
+    if not pack:
+        return 1
+
+    slash_match = re.search(r"(\d+)\s*/", pack)
+    if slash_match:
+        value = int(slash_match.group(1))
+        if value > 0:
+            return value
+
+    suffix_match = UNIT_PATTERN.search(pack)
+    if suffix_match:
+        value = int(suffix_match.group(1))
+        if value > 0:
+            return value
+
+    fallback = re.search(r"\d+", pack)
+    if fallback:
+        value = int(fallback.group())
+        if value > 0:
+            return value
+
+    return 1
+
+
+def _title_case(text: str) -> str:
+    if not text:
         return ""
-    lowered = description.lower()
-    return " ".join(word.capitalize() for word in lowered.split())
-
-
-def _format_money(value: Decimal) -> str:
-    return f"{_quantize(value):.2f}"
+    lowered = text.lower()
+    return " ".join(segment.capitalize() for segment in lowered.split())
 
 
 def _quantize(value: Decimal) -> Decimal:
     return value.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
 
-def _coerce_decimal(value: Decimal | float) -> Decimal:
+def _format_money(value: Decimal) -> str:
+    return f"{_quantize(value):.2f}"
+
+
+def _as_decimal(value: Decimal | float) -> Decimal:
     if isinstance(value, Decimal):
         return value
     return Decimal(str(value))
@@ -207,4 +227,5 @@ __all__ = [
     "DEFAULT_ONLINE_MARKUP",
     "DEFAULT_STORE_MARKUP",
     "analyze_invoice_text",
+    "_infer_units",
 ]
