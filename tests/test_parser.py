@@ -104,3 +104,48 @@ def test_parse_invoice_lines_handles_columnar_pdf_layout():
     assert second.quantity == 2
     assert second.unit_price == Decimal("56.78")
     assert second.amount == Decimal("113.56")
+
+
+def test_parse_invoice_lines_handles_multiple_columnar_sections():
+    text = "\n".join(
+        [
+            "Item",
+            "AA 0001-XYZ",
+            "AB 0002-XYZ",
+            "",
+            "Alpha Product",
+            "Beta Product",
+            "",
+            "Total",
+            "",
+            "1",
+            "2",
+            "",
+            "10.00",
+            "20.00",
+            "",
+            "10.00",
+            "40.00",
+            "",
+            "Item",
+            "AC 0003-XYZ",
+            "",
+            "Gamma Product",
+            "",
+            "Total",
+            "",
+            "3",
+            "",
+            "30.00",
+            "",
+            "90.00",
+        ]
+    )
+
+    lines = parse_invoice_lines(text)
+
+    assert len(lines) == 3
+    assert [line.sku for line in lines] == ["0001-XYZ", "0002-XYZ", "0003-XYZ"]
+    assert lines[2].quantity == 3
+    assert lines[2].unit_price == Decimal("30.00")
+    assert lines[2].amount == Decimal("90.00")

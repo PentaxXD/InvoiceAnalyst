@@ -38,19 +38,17 @@ def parse_invoice_lines(text: str) -> List[InvoiceLine]:
 
     try:
         parsed = [_finalize_block(block) for block in blocks]
+        if parsed:
+            return parsed
     except InvoiceParsingError:
-        columnar = _parse_columnar_invoice(lines)
-        if columnar is None:
-            raise
-        return columnar
+        pass
 
-    if not parsed:
-        columnar = _parse_columnar_invoice(lines)
-        if columnar is None:
-            raise InvoiceParsingError("No invoice lines detected in provided text.")
-        return columnar
-
-    return parsed
+    columnar = _parse_columnar_invoice(lines)
+    if columnar is None:
+        if blocks:
+            raise InvoiceParsingError("Failed to parse invoice in either row or column layout.")
+        raise InvoiceParsingError("No invoice lines detected in provided text.")
+    return columnar
 
 
 def _gather_item_blocks(lines: Iterable[str]) -> Iterator[Sequence[str]]:
@@ -143,58 +141,74 @@ def _normalize_number(token: str) -> str:
 
 
 def _parse_columnar_invoice(lines: Sequence[str]) -> Optional[List[InvoiceLine]]:
-    sections = _extract_columnar_sections(lines)
-    if sections is None:
-        return None
-
-    item_lines, description_lines, quantity_tokens, unit_tokens, amount_tokens = sections
-
-    if not item_lines:
-        return None
-
-    if not (
-        len(quantity_tokens) >= len(item_lines)
-        and len(unit_tokens) >= len(item_lines)
-        and len(amount_tokens) >= len(item_lines)
-    ):
-        return None
-
-    descriptions = _segment_descriptions(description_lines, len(item_lines))
-    if descriptions is None:
-        return None
-
+    cursor = 0
     invoice_lines: List[InvoiceLine] = []
-    for idx, item_line in enumerate(item_lines):
-        match = ITEM_PATTERN.match(item_line)
-        if not match:
+    while cursor < len(lines):
+        section = _extract_columnar_section(lines, cursor)
+        if section is None:
+            cursor += 1
+            continue
+
+        (
+            next_cursor,
+            item_lines,
+            description_lines,
+            quantity_tokens,
+            unit_tokens,
+            amount_tokens,
+        ) = section
+
+        if not item_lines:
+            cursor = next_cursor
+            continue
+
+        if not (
+            len(quantity_tokens) >= len(item_lines)
+            and len(unit_tokens) >= len(item_lines)
+            and len(amount_tokens) >= len(item_lines)
+        ):
             return None
 
-        try:
-            quantity = int(_normalize_number(quantity_tokens[idx]))
-            unit_price = Decimal(_normalize_number(unit_tokens[idx]))
-            amount = Decimal(_normalize_number(amount_tokens[idx]))
-        except (IndexError, ValueError, ArithmeticError):
+        descriptions = _segment_descriptions(description_lines, len(item_lines))
+        if descriptions is None:
             return None
 
-        invoice_lines.append(
-            InvoiceLine(
-                item_code=match.group("code"),
-                sku=match.group("sku"),
-                description=_normalize_whitespace(descriptions[idx]),
-                quantity=quantity,
-                unit_price=unit_price,
-                amount=amount,
+        for idx, item_line in enumerate(item_lines):
+            match = ITEM_PATTERN.match(item_line)
+            if not match:
+                return None
+
+            try:
+                quantity = int(_normalize_number(quantity_tokens[idx]))
+                unit_price = Decimal(_normalize_number(unit_tokens[idx]))
+                amount = Decimal(_normalize_number(amount_tokens[idx]))
+            except (IndexError, ValueError, ArithmeticError):
+                return None
+
+            invoice_lines.append(
+                InvoiceLine(
+                    item_code=match.group("code"),
+                    sku=match.group("sku"),
+                    description=_normalize_whitespace(descriptions[idx]),
+                    quantity=quantity,
+                    unit_price=unit_price,
+                    amount=amount,
+                )
             )
-        )
 
-    return invoice_lines
+        cursor = next_cursor
+
+    return invoice_lines or None
 
 
-def _extract_columnar_sections(
-    lines: Sequence[str],
-) -> Optional[Tuple[List[str], List[str], List[str], List[str], List[str]]]:
+def _extract_columnar_section(
+    lines: Sequence[str], start_idx: int
+) -> Optional[
+    Tuple[int, List[str], List[str], List[str], List[str], List[str]]
+]:
     heading_idx = None
-    for idx, raw in enumerate(lines):
+    for idx in range(start_idx, len(lines)):
+        raw = lines[idx]
         if raw.strip().lower() == "item":
             heading_idx = idx
             break
@@ -241,7 +255,7 @@ def _extract_columnar_sections(
     unit_tokens, idx = _collect_column(lines, idx, len(item_lines), MONEY_PATTERN)
     amount_tokens, idx = _collect_column(lines, idx, len(item_lines), MONEY_PATTERN)
 
-    return item_lines, description_lines, quantity_tokens, unit_tokens, amount_tokens
+    return idx, item_lines, description_lines, quantity_tokens, unit_tokens, amount_tokens
 
 
 def _collect_column(
