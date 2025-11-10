@@ -3,15 +3,16 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import Decimal, ROUND_HALF_UP, ROUND_CEILING
 import re
 from typing import List
 
 from .parser import InvoiceLine, parse_invoice_lines
 
 
-DEFAULT_STORE_MARKUP = Decimal("1.68")
-DEFAULT_ONLINE_MARKUP = Decimal("1.86")
+DEFAULT_STORE_MARKUP = Decimal("1.55")
+DEFAULT_STORE_SURCHARGE = Decimal("0.30")
+DEFAULT_ONLINE_MARKUP = Decimal("0.50")
 
 UNIT_PATTERN = re.compile(
     r"(\d+)\s*(?:/|x|X)?\s*(?:PCS?|PACKS?|PACK|PKG|PKGS|EA|EACH|COUNT|BTL|BOTTLES?|"
@@ -99,7 +100,8 @@ def analyze_invoice_text(
     """Parse raw text and calculate pricing information."""
 
     store_multiplier = _as_decimal(store_markup)
-    online_multiplier = _as_decimal(online_markup)
+    online_surcharge = _as_decimal(online_markup)
+    store_surcharge = DEFAULT_STORE_SURCHARGE
 
     parsed_lines = parse_invoice_lines(text)
     analyzed: List[AnalyzedLine] = []
@@ -111,8 +113,9 @@ def analyze_invoice_text(
         unit_price = _quantize(raw.unit_price)
         amount = _quantize(raw.amount)
         price_each_product = _quantize(raw.unit_price / Decimal(units))
-        store_price = _quantize(price_each_product * store_multiplier)
-        online_price = _quantize(price_each_product * online_multiplier)
+        store_base = price_each_product * store_multiplier + store_surcharge
+        store_price = _round_to_nine_cents(store_base)
+        online_price = _quantize(store_price + online_surcharge)
 
         analyzed.append(
             AnalyzedLine(
@@ -216,6 +219,18 @@ def _format_money(value: Decimal) -> str:
     return f"{_quantize(value):.2f}"
 
 
+def _round_to_nine_cents(value: Decimal) -> Decimal:
+    if value <= 0:
+        return Decimal("0.00")
+
+    tenths = (value * Decimal("10")).to_integral_value(rounding=ROUND_CEILING)
+    rounded = Decimal(tenths) / Decimal("10")
+    candidate = rounded - Decimal("0.01")
+    if candidate < 0:
+        candidate = Decimal("0.00")
+    return _quantize(candidate)
+
+
 def _as_decimal(value: Decimal | float) -> Decimal:
     if isinstance(value, Decimal):
         return value
@@ -226,6 +241,7 @@ __all__ = [
     "AnalyzedLine",
     "DEFAULT_ONLINE_MARKUP",
     "DEFAULT_STORE_MARKUP",
+    "DEFAULT_STORE_SURCHARGE",
     "analyze_invoice_text",
     "_infer_units",
 ]

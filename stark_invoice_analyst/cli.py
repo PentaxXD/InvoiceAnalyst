@@ -42,13 +42,13 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
         "--store-markup",
         type=float,
         default=float(DEFAULT_STORE_MARKUP),
-        help="Markup multiplier for the store price column.",
+        help="Multiplier applied to the per-unit price before store rounding (default: %(default)s).",
     )
     parser.add_argument(
         "--online-markup",
         type=float,
         default=float(DEFAULT_ONLINE_MARKUP),
-        help="Markup multiplier for the online price column.",
+        help="Flat surcharge added to the rounded store price for the online price column (default: %(default)s).",
     )
 
     args = parser.parse_args(list(argv) if argv is not None else None)
