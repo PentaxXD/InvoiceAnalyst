@@ -234,6 +234,11 @@ def _extract_columnar_section(
     if not item_lines:
         return None
 
+    pre_columns = _collect_pre_item_columns(lines, start_idx, heading_idx, len(item_lines))
+    if pre_columns is not None:
+        description_lines, quantity_tokens, unit_tokens, amount_tokens = pre_columns
+        return idx, item_lines, description_lines, quantity_tokens, unit_tokens, amount_tokens
+
     description_lines: List[str] = []
     while idx < len(lines):
         stripped = lines[idx].strip()
@@ -253,9 +258,6 @@ def _extract_columnar_section(
     quantity_tokens, idx = _collect_column(lines, idx, len(item_lines), INTEGER_PATTERN)
     unit_tokens, idx = _collect_column(lines, idx, len(item_lines), MONEY_PATTERN)
     amount_tokens, idx = _collect_column(lines, idx, len(item_lines), MONEY_PATTERN)
-
-    if not (quantity_tokens and unit_tokens and amount_tokens):
-        return None
 
     return idx, item_lines, description_lines, quantity_tokens, unit_tokens, amount_tokens
 
@@ -328,6 +330,89 @@ def _looks_like_numeric_column_line(text: str) -> bool:
         return False
 
     return bool(re.fullmatch(r"[\d\s,.\-()]+", stripped))
+
+
+def _collect_pre_item_columns(
+    lines: Sequence[str], start_idx: int, heading_idx: int, item_count: int
+) -> Optional[Tuple[List[str], List[str], List[str], List[str]]]:
+    desc_heading_idx = None
+    quantity_heading_idx = None
+    amount_heading_idx = None
+
+    for idx in range(heading_idx - 1, start_idx - 1, -1):
+        stripped = lines[idx].strip()
+        if not stripped:
+            continue
+        lower = stripped.lower()
+        if desc_heading_idx is None and lower == "description":
+            desc_heading_idx = idx
+        elif quantity_heading_idx is None and "quantity" in lower and "price" in lower:
+            quantity_heading_idx = idx
+        elif amount_heading_idx is None and lower == "amount":
+            amount_heading_idx = idx
+
+        if desc_heading_idx is not None and quantity_heading_idx is not None and amount_heading_idx is not None:
+            break
+
+    if (
+        desc_heading_idx is None
+        or quantity_heading_idx is None
+        or amount_heading_idx is None
+        or not (desc_heading_idx < quantity_heading_idx < amount_heading_idx < heading_idx)
+    ):
+        return None
+
+    description_lines: List[str] = []
+    quantity_tokens: List[str] = []
+    unit_tokens: List[str] = []
+    amount_tokens: List[str] = []
+
+    for idx in range(desc_heading_idx + 1, heading_idx):
+        stripped = lines[idx].strip()
+        if not stripped:
+            continue
+
+        lower = stripped.lower()
+        if lower.startswith(("description", "quantity", "amount", "total", "page ")):
+            continue
+        if lower == "item":
+            break
+
+        normalized = _normalize_number(stripped)
+
+        if any(char.isalpha() for char in stripped):
+            description_lines.append(stripped)
+            continue
+
+        if len(quantity_tokens) < item_count and INTEGER_PATTERN.fullmatch(normalized):
+            quantity_tokens.append(stripped)
+        elif len(quantity_tokens) < item_count:
+            return None
+        elif len(unit_tokens) < item_count and MONEY_PATTERN.fullmatch(normalized):
+            unit_tokens.append(stripped)
+        elif len(unit_tokens) < item_count:
+            return None
+        elif len(amount_tokens) < item_count and MONEY_PATTERN.fullmatch(normalized):
+            amount_tokens.append(stripped)
+        elif len(amount_tokens) < item_count:
+            return None
+
+        if (
+            len(quantity_tokens) == item_count
+            and len(unit_tokens) == item_count
+            and len(amount_tokens) == item_count
+        ):
+            break
+
+    if (
+        len(quantity_tokens) != item_count
+        or len(unit_tokens) != item_count
+        or len(amount_tokens) != item_count
+        or not description_lines
+    ):
+        return None
+
+    return description_lines, quantity_tokens, unit_tokens, amount_tokens
 
 
 def _pick_description_merge_index(entries: Sequence[str]) -> Optional[int]:
