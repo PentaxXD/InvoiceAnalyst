@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from decimal import Decimal
 import re
-from typing import Iterable, Iterator, List, Sequence, Tuple
+from typing import Iterable, Iterator, List, Optional, Sequence, Tuple
 
 
 ITEM_PATTERN = re.compile(r"^(?P<code>[A-Z]{2,4})\s+(?P<sku>[A-Z0-9][A-Z0-9-]*)\b")
@@ -36,9 +36,20 @@ def parse_invoice_lines(text: str) -> List[InvoiceLine]:
     lines = [line.rstrip() for line in text.splitlines()]
     blocks = list(_gather_item_blocks(lines))
 
-    parsed = [_finalize_block(block) for block in blocks]
+    try:
+        parsed = [_finalize_block(block) for block in blocks]
+    except InvoiceParsingError:
+        columnar = _parse_columnar_invoice(lines)
+        if columnar is None:
+            raise
+        return columnar
+
     if not parsed:
-        raise InvoiceParsingError("No invoice lines detected in provided text.")
+        columnar = _parse_columnar_invoice(lines)
+        if columnar is None:
+            raise InvoiceParsingError("No invoice lines detected in provided text.")
+        return columnar
+
     return parsed
 
 
@@ -127,7 +138,157 @@ def _split_numeric_tail(tokens: Sequence[str]) -> Tuple[int, Decimal, Decimal, L
 
 
 def _normalize_number(token: str) -> str:
-    return token.replace(",", "")
+    cleaned = re.sub(r"[^\d.,-]", "", token)
+    return cleaned.replace(",", "")
+
+
+def _parse_columnar_invoice(lines: Sequence[str]) -> Optional[List[InvoiceLine]]:
+    sections = _extract_columnar_sections(lines)
+    if sections is None:
+        return None
+
+    item_lines, description_lines, quantity_tokens, unit_tokens, amount_tokens = sections
+
+    if not item_lines:
+        return None
+
+    if not (
+        len(quantity_tokens) >= len(item_lines)
+        and len(unit_tokens) >= len(item_lines)
+        and len(amount_tokens) >= len(item_lines)
+    ):
+        return None
+
+    descriptions = _segment_descriptions(description_lines, len(item_lines))
+    if descriptions is None:
+        return None
+
+    invoice_lines: List[InvoiceLine] = []
+    for idx, item_line in enumerate(item_lines):
+        match = ITEM_PATTERN.match(item_line)
+        if not match:
+            return None
+
+        try:
+            quantity = int(_normalize_number(quantity_tokens[idx]))
+            unit_price = Decimal(_normalize_number(unit_tokens[idx]))
+            amount = Decimal(_normalize_number(amount_tokens[idx]))
+        except (IndexError, ValueError, ArithmeticError):
+            return None
+
+        invoice_lines.append(
+            InvoiceLine(
+                item_code=match.group("code"),
+                sku=match.group("sku"),
+                description=_normalize_whitespace(descriptions[idx]),
+                quantity=quantity,
+                unit_price=unit_price,
+                amount=amount,
+            )
+        )
+
+    return invoice_lines
+
+
+def _extract_columnar_sections(
+    lines: Sequence[str],
+) -> Optional[Tuple[List[str], List[str], List[str], List[str], List[str]]]:
+    heading_idx = None
+    for idx, raw in enumerate(lines):
+        if raw.strip().lower() == "item":
+            heading_idx = idx
+            break
+
+    if heading_idx is None:
+        return None
+
+    idx = heading_idx + 1
+    item_lines: List[str] = []
+
+    while idx < len(lines):
+        stripped = lines[idx].strip()
+        idx += 1
+        if not stripped:
+            continue
+        match = ITEM_PATTERN.match(stripped)
+        if match:
+            item_lines.append(stripped)
+        else:
+            idx -= 1
+            break
+
+    if not item_lines:
+        return None
+
+    description_lines: List[str] = []
+    while idx < len(lines):
+        stripped = lines[idx].strip()
+        idx += 1
+        if not stripped:
+            continue
+        lower = stripped.lower()
+        normalized = _normalize_number(stripped)
+        if lower.startswith("total"):
+            break
+        if INTEGER_PATTERN.fullmatch(normalized) or MONEY_PATTERN.fullmatch(normalized):
+            idx -= 1
+            break
+        if lower == "description":
+            continue
+        description_lines.append(stripped)
+
+    quantity_tokens, idx = _collect_column(lines, idx, len(item_lines), INTEGER_PATTERN)
+    unit_tokens, idx = _collect_column(lines, idx, len(item_lines), MONEY_PATTERN)
+    amount_tokens, idx = _collect_column(lines, idx, len(item_lines), MONEY_PATTERN)
+
+    return item_lines, description_lines, quantity_tokens, unit_tokens, amount_tokens
+
+
+def _collect_column(
+    lines: Sequence[str], start_idx: int, count: int, pattern: re.Pattern[str]
+) -> Tuple[List[str], int]:
+    values: List[str] = []
+    idx = start_idx
+
+    while idx < len(lines) and len(values) < count:
+        stripped = lines[idx].strip()
+        idx += 1
+        if not stripped:
+            continue
+
+        normalized = _normalize_number(stripped)
+        if pattern.fullmatch(normalized):
+            values.append(stripped)
+
+    return values, idx
+
+
+def _segment_descriptions(lines: Sequence[str], count: int) -> Optional[List[str]]:
+    if not lines:
+        return None
+
+    entries: List[str] = []
+    current_parts: List[str] = []
+
+    for raw in lines:
+        stripped = raw.strip()
+        if not stripped:
+            continue
+
+        current_parts.append(stripped)
+        if stripped.endswith(("/", "-")):
+            continue
+
+        entries.append(" ".join(current_parts))
+        current_parts = []
+
+    if current_parts:
+        entries.append(" ".join(current_parts))
+
+    if len(entries) != count:
+        return None
+
+    return entries
 
 
 def _normalize_whitespace(text: str) -> str:
