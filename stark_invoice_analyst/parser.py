@@ -241,10 +241,9 @@ def _extract_columnar_section(
         if not stripped:
             continue
         lower = stripped.lower()
-        normalized = _normalize_number(stripped)
         if lower.startswith("total"):
             break
-        if INTEGER_PATTERN.fullmatch(normalized) or MONEY_PATTERN.fullmatch(normalized):
+        if _looks_like_numeric_column_line(stripped):
             idx -= 1
             break
         if lower == "description":
@@ -312,6 +311,20 @@ def _segment_descriptions(lines: Sequence[str], count: int) -> Optional[List[str
         return None
 
     return entries
+
+
+def _looks_like_numeric_column_line(text: str) -> bool:
+    if not text:
+        return False
+
+    stripped = text.strip()
+    if not stripped:
+        return False
+
+    if any(char.isalpha() for char in stripped):
+        return False
+
+    return bool(re.fullmatch(r"[\d\s,.\-()]+", stripped))
 
 
 def _pick_description_merge_index(entries: Sequence[str]) -> Optional[int]:
