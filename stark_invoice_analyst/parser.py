@@ -299,10 +299,33 @@ def _segment_descriptions(lines: Sequence[str], count: int) -> Optional[List[str
     if current_parts:
         entries.append(" ".join(current_parts))
 
+    if len(entries) < count:
+        return None
+
+    while len(entries) > count:
+        merge_idx = _pick_description_merge_index(entries)
+        if merge_idx is None:
+            return None
+        entries[merge_idx - 1] = f"{entries[merge_idx - 1]} {entries.pop(merge_idx)}"
+
     if len(entries) != count:
         return None
 
     return entries
+
+
+def _pick_description_merge_index(entries: Sequence[str]) -> Optional[int]:
+    candidate_idx = None
+    candidate_score = None
+
+    for idx in range(1, len(entries)):
+        entry = entries[idx]
+        score = len(entry)
+        if candidate_score is None or score < candidate_score:
+            candidate_idx = idx
+            candidate_score = score
+
+    return candidate_idx
 
 
 def _normalize_whitespace(text: str) -> str:

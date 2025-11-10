@@ -149,3 +149,35 @@ def test_parse_invoice_lines_handles_multiple_columnar_sections():
     assert lines[2].quantity == 3
     assert lines[2].unit_price == Decimal("30.00")
     assert lines[2].amount == Decimal("90.00")
+
+
+def test_parse_invoice_lines_merges_wrapped_description_fragments():
+    text = "\n".join(
+        [
+            "Item",
+            "AA 0001-XYZ",
+            "AB 0002-XYZ",
+            "",
+            "First product main line",
+            "PACK DETAILS",
+            "Second product main line",
+            "Extra",
+            "",
+            "Total",
+            "",
+            "1",
+            "2",
+            "",
+            "10.00",
+            "20.00",
+            "",
+            "10.00",
+            "40.00",
+        ]
+    )
+
+    lines = parse_invoice_lines(text)
+
+    assert len(lines) == 2
+    assert lines[0].description == "First product main line PACK DETAILS"
+    assert lines[1].description == "Second product main line Extra"
