@@ -241,7 +241,7 @@ def _extract_columnar_section(
         if not stripped:
             continue
         lower = stripped.lower()
-        if lower.startswith("total"):
+        if lower.startswith(("total", "page ")):
             break
         if _looks_like_numeric_column_line(stripped):
             idx -= 1
@@ -253,6 +253,9 @@ def _extract_columnar_section(
     quantity_tokens, idx = _collect_column(lines, idx, len(item_lines), INTEGER_PATTERN)
     unit_tokens, idx = _collect_column(lines, idx, len(item_lines), MONEY_PATTERN)
     amount_tokens, idx = _collect_column(lines, idx, len(item_lines), MONEY_PATTERN)
+
+    if not (quantity_tokens and unit_tokens and amount_tokens):
+        return None
 
     return idx, item_lines, description_lines, quantity_tokens, unit_tokens, amount_tokens
 
