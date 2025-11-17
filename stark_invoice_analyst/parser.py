@@ -61,6 +61,12 @@ def _gather_item_blocks(lines: Iterable[str]) -> Iterator[Sequence[str]]:
         if not stripped:
             continue
 
+        if _looks_like_footer_line(stripped):
+            if current:
+                yield tuple(current)
+                current = []
+            continue
+
         if ITEM_PATTERN.match(stripped):
             if current:
                 yield tuple(current)
@@ -103,8 +109,6 @@ def _collect_tokens(match: re.Match[str], block: Sequence[str]) -> List[str]:
         tokens.extend(TOKEN_PATTERN.findall(head_remainder))
 
     for line in block[1:]:
-        if _looks_like_footer_line(line):
-            break
         tokens.extend(TOKEN_PATTERN.findall(line))
 
     return tokens
@@ -469,8 +473,6 @@ def _looks_like_footer_line(text: str) -> bool:
             "cd ",
             "delivery",
             "claims",
-            "x-mas",
-            "xmas",
             "online discount",
             "store discount",
         )

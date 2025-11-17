@@ -228,3 +228,19 @@ SUBTOTAL 4,116.86
 
     total = sum(line.amount for line in lines)
     assert total == Decimal("1995.42")
+
+
+def test_parse_invoice_lines_allows_xmas_in_description():
+    text = "\n".join(
+        [
+            "Item",
+            "3ZZ 1000 FESTIVE PRODUCT",
+            "LIMITED X-MAS EDITION",
+            "1 10.00 10.00",
+        ]
+    )
+
+    lines = parse_invoice_lines(text)
+
+    assert len(lines) == 1
+    assert lines[0].amount == Decimal("10.00")
