@@ -5,6 +5,7 @@ from stark_invoice_analyst.parser import parse_invoice_lines
 
 
 SAMPLE_PATH = Path(__file__).parent / "data" / "sample_invoice_extracted.txt"
+PDF_SAMPLE_PATH = Path(__file__).parent / "data" / "pdf_extract_sample.txt"
 
 
 def test_parse_invoice_lines_counts_all_rows():
@@ -181,3 +182,25 @@ def test_parse_invoice_lines_merges_wrapped_description_fragments():
     assert len(lines) == 2
     assert lines[0].description == "First product main line PACK DETAILS"
     assert lines[1].description == "Second product main line Extra"
+
+
+def test_parse_invoice_lines_handles_pdf_extract_sample():
+    text = PDF_SAMPLE_PATH.read_text(encoding="utf-8")
+
+    lines = parse_invoice_lines(text)
+
+    assert len(lines) == 28
+    assert lines[0].item_code == "3AB"
+    assert lines[0].sku == "204-984451"
+    assert lines[0].quantity == 1
+    assert lines[0].unit_price == Decimal("118.68")
+    assert lines[0].amount == Decimal("118.68")
+    assert lines[0].description.startswith("ANTHON BERG CHERRY")
+
+    tail = lines[-1]
+    assert tail.item_code == "3M"
+    assert tail.sku == "215-4024273"
+    assert tail.description.endswith("MILKA SCHNEEMANN 24 / 50 G.")
+    assert tail.quantity == 1
+    assert tail.unit_price == Decimal("71.76")
+    assert tail.amount == Decimal("71.76")

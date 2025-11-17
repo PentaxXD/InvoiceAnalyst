@@ -8,7 +8,9 @@ import re
 from typing import Iterable, Iterator, List, Optional, Sequence, Tuple
 
 
-ITEM_PATTERN = re.compile(r"^(?P<code>[A-Z]{2,4})\s+(?P<sku>[A-Z0-9][A-Z0-9-]*)\b")
+ITEM_PATTERN = re.compile(
+    r"^(?P<code>(?=[A-Z0-9]*[A-Z])[A-Z0-9]{2,4})\s+(?P<sku>[A-Z0-9][A-Z0-9-]*)\b"
+)
 TOKEN_PATTERN = re.compile(r"[A-Za-z0-9,&./-]+")
 MONEY_PATTERN = re.compile(r"^\d{1,3}(?:,\d{3})*\.\d{2}$")
 INTEGER_PATTERN = re.compile(r"^\d{1,3}(?:,\d{3})*$")
