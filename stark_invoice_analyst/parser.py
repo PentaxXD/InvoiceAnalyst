@@ -103,6 +103,8 @@ def _collect_tokens(match: re.Match[str], block: Sequence[str]) -> List[str]:
         tokens.extend(TOKEN_PATTERN.findall(head_remainder))
 
     for line in block[1:]:
+        if _looks_like_footer_line(line):
+            break
         tokens.extend(TOKEN_PATTERN.findall(line))
 
     return tokens
@@ -449,6 +451,33 @@ def _pick_description_merge_index(entries: Sequence[str]) -> Optional[int]:
 
 def _normalize_whitespace(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
+
+
+def _looks_like_footer_line(text: str) -> bool:
+    stripped = text.strip()
+    if not stripped:
+        return False
+
+    lower = stripped.lower()
+    if any(
+        lower.startswith(prefix)
+        for prefix in (
+            "subtotal",
+            "total",
+            "balance",
+            "-cd",
+            "cd ",
+            "delivery",
+            "claims",
+            "x-mas",
+            "xmas",
+            "online discount",
+            "store discount",
+        )
+    ):
+        return True
+
+    return "discount" in lower or "pay this amount" in lower
 
 
 __all__ = ["InvoiceLine", "InvoiceParsingError", "parse_invoice_lines"]

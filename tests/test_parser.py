@@ -213,11 +213,13 @@ def test_parse_invoice_lines_handles_thousand_amounts_in_row_layout():
 3TR 300-3112 TRUMPF BRANDY CHOCO. BOX (blue) 6 / 250 G. 20 55.74 1,114.80
 3TR 301-3202 TRUMPF LIQUOR CHOCO. BOX (red) 6 / 250 G. 8 55.74 445.92
 SUBTOTAL 4,116.86
+-CD X-MAS 10% X-MAS 10K AND OVER DISCOUNT 10 % -10.00% -411.69
 """
 
     lines = parse_invoice_lines(text)
 
     assert len(lines) == 4
+    assert lines[0].amount == Decimal("194.70")
 
     big = next(line for line in lines if line.sku == "300-3112")
     assert big.quantity == 20
