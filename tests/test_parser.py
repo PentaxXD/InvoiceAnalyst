@@ -204,3 +204,25 @@ def test_parse_invoice_lines_handles_pdf_extract_sample():
     assert tail.quantity == 1
     assert tail.unit_price == Decimal("71.76")
     assert tail.amount == Decimal("71.76")
+
+
+def test_parse_invoice_lines_handles_thousand_amounts_in_row_layout():
+    text = """Item Description Quantity Price Each Amount
+3DR 3000-827240 DR. OETKER DISPLAY WINTERLICHE BACKIDEE I 30 PCS. 1 194.70 194.70
+3FR 51305 KINDER CHOCOLATE 16 x 6 / T4 1 240.00 240.00
+3TR 300-3112 TRUMPF BRANDY CHOCO. BOX (blue) 6 / 250 G. 20 55.74 1,114.80
+3TR 301-3202 TRUMPF LIQUOR CHOCO. BOX (red) 6 / 250 G. 8 55.74 445.92
+SUBTOTAL 4,116.86
+"""
+
+    lines = parse_invoice_lines(text)
+
+    assert len(lines) == 4
+
+    big = next(line for line in lines if line.sku == "300-3112")
+    assert big.quantity == 20
+    assert big.unit_price == Decimal("55.74")
+    assert big.amount == Decimal("1114.80")
+
+    total = sum(line.amount for line in lines)
+    assert total == Decimal("1995.42")
