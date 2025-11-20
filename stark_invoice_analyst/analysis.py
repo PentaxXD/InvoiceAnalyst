@@ -61,6 +61,51 @@ PACK_KEYWORDS = {
     "CONTAINER",
     "GLASS",
 }
+WEIGHT_KEYWORDS = {
+    "G",
+    "G.",
+    "GRAM",
+    "GRAMS",
+    "KG",
+    "KGS",
+    "OZ",
+    "OZ.",
+    "LB",
+    "LBS",
+    "ML",
+    "L",
+    "LTR",
+    "CL",
+    "MG",
+}
+COUNT_KEYWORDS = {
+    "PCS",
+    "PCS.",
+    "PACK",
+    "PACKS",
+    "PK",
+    "PKS",
+    "PKG",
+    "PKGS",
+    "EA",
+    "EACH",
+    "COUNT",
+    "CT",
+    "STK",
+    "BTL",
+    "BTLS",
+    "BOTTLE",
+    "BOTTLES",
+    "CAN",
+    "CANS",
+    "JAR",
+    "JARS",
+    "BAG",
+    "BAGS",
+    "BOX",
+    "BOXES",
+    "CS",
+}
 
 
 @dataclass
@@ -158,6 +203,7 @@ def _split_description(description: str) -> tuple[str, str]:
 
     base = " ".join(base_tokens).strip(" ,-/")
     pack = " ".join(pack_tokens).strip(" ,")
+    pack = _normalize_pack_order(pack)
     return base or description.strip(), pack
 
 
@@ -179,9 +225,36 @@ def _is_pack_token(token: str, current: List[str]) -> bool:
     return False
 
 
+def _normalize_pack_order(pack: str) -> str:
+    if "/" not in pack:
+        return pack
+
+    left, right = [segment.strip() for segment in pack.split("/", 1)]
+    if _looks_like_weight(left) and _looks_like_count(right):
+        return f"{right} / {left}"
+
+    return pack
+
+
+def _looks_like_weight(segment: str) -> bool:
+    tokens = [token.strip(" ,.").upper() for token in segment.split()]
+    return any(token in WEIGHT_KEYWORDS for token in tokens if token)
+
+
+def _looks_like_count(segment: str) -> bool:
+    tokens = [token.strip(" ,.").upper() for token in segment.split()]
+    return any(token in COUNT_KEYWORDS for token in tokens if token)
+
+
 def _infer_units(pack: str) -> int:
     if not pack:
         return 1
+
+    multiply_match = re.search(r"(\d+)\s*[xX×]\s*(\d+)", pack)
+    if multiply_match:
+        value = int(multiply_match.group(1)) * int(multiply_match.group(2))
+        if value > 0:
+            return value
 
     slash_match = re.search(r"(\d+)\s*/", pack)
     if slash_match:

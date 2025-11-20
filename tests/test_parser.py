@@ -5,6 +5,7 @@ from stark_invoice_analyst.parser import parse_invoice_lines
 
 
 SAMPLE_PATH = Path(__file__).parent / "data" / "sample_invoice_extracted.txt"
+PDF_SAMPLE_PATH = Path(__file__).parent / "data" / "pdf_extract_sample.txt"
 
 
 def test_parse_invoice_lines_counts_all_rows():
@@ -181,3 +182,65 @@ def test_parse_invoice_lines_merges_wrapped_description_fragments():
     assert len(lines) == 2
     assert lines[0].description == "First product main line PACK DETAILS"
     assert lines[1].description == "Second product main line Extra"
+
+
+def test_parse_invoice_lines_handles_pdf_extract_sample():
+    text = PDF_SAMPLE_PATH.read_text(encoding="utf-8")
+
+    lines = parse_invoice_lines(text)
+
+    assert len(lines) == 28
+    assert lines[0].item_code == "3AB"
+    assert lines[0].sku == "204-984451"
+    assert lines[0].quantity == 1
+    assert lines[0].unit_price == Decimal("118.68")
+    assert lines[0].amount == Decimal("118.68")
+    assert lines[0].description.startswith("ANTHON BERG CHERRY")
+
+    tail = lines[-1]
+    assert tail.item_code == "3M"
+    assert tail.sku == "215-4024273"
+    assert tail.description.endswith("MILKA SCHNEEMANN 24 / 50 G.")
+    assert tail.quantity == 1
+    assert tail.unit_price == Decimal("71.76")
+    assert tail.amount == Decimal("71.76")
+
+
+def test_parse_invoice_lines_handles_thousand_amounts_in_row_layout():
+    text = """Item Description Quantity Price Each Amount
+3DR 3000-827240 DR. OETKER DISPLAY WINTERLICHE BACKIDEE I 30 PCS. 1 194.70 194.70
+3FR 51305 KINDER CHOCOLATE 16 x 6 / T4 1 240.00 240.00
+3TR 300-3112 TRUMPF BRANDY CHOCO. BOX (blue) 6 / 250 G. 20 55.74 1,114.80
+3TR 301-3202 TRUMPF LIQUOR CHOCO. BOX (red) 6 / 250 G. 8 55.74 445.92
+SUBTOTAL 4,116.86
+-CD X-MAS 10% X-MAS 10K AND OVER DISCOUNT 10 % -10.00% -411.69
+"""
+
+    lines = parse_invoice_lines(text)
+
+    assert len(lines) == 4
+    assert lines[0].amount == Decimal("194.70")
+
+    big = next(line for line in lines if line.sku == "300-3112")
+    assert big.quantity == 20
+    assert big.unit_price == Decimal("55.74")
+    assert big.amount == Decimal("1114.80")
+
+    total = sum(line.amount for line in lines)
+    assert total == Decimal("1995.42")
+
+
+def test_parse_invoice_lines_allows_xmas_in_description():
+    text = "\n".join(
+        [
+            "Item",
+            "3ZZ 1000 FESTIVE PRODUCT",
+            "LIMITED X-MAS EDITION",
+            "1 10.00 10.00",
+        ]
+    )
+
+    lines = parse_invoice_lines(text)
+
+    assert len(lines) == 1
+    assert lines[0].amount == Decimal("10.00")

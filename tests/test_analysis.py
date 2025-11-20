@@ -55,3 +55,23 @@ def test_infer_units_handles_unit_only_suffix():
     pack = "15 / CS"
 
     assert _infer_units(pack) == 15
+
+
+def test_infer_units_handles_multiplication_pattern():
+    pack = "16 x 6 / T4"
+
+    assert _infer_units(pack) == 96
+
+
+def test_analyze_invoice_text_reorders_weight_first_pack():
+    text = "\n".join(
+        [
+            "Item",
+            "3RS 7021 SAMPLE PRODUCT 100 G. / 12 PCS 1 10.00 10.00",
+        ]
+    )
+
+    results = analyze_invoice_text(text)
+
+    assert len(results) == 1
+    assert results[0].pack_size == "12 PCS / 100 G."

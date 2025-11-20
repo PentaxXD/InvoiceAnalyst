@@ -8,10 +8,12 @@ import re
 from typing import Iterable, Iterator, List, Optional, Sequence, Tuple
 
 
-ITEM_PATTERN = re.compile(r"^(?P<code>[A-Z]{2,4})\s+(?P<sku>[A-Z0-9][A-Z0-9-]*)\b")
+ITEM_PATTERN = re.compile(
+    r"^(?P<code>(?=[A-Z0-9]*[A-Z])[A-Z0-9]{2,4})\s+(?P<sku>[A-Z0-9][A-Z0-9-]*)\b"
+)
 TOKEN_PATTERN = re.compile(r"[A-Za-z0-9,&./-]+")
-MONEY_PATTERN = re.compile(r"^\d{1,3}(?:,\d{3})*\.\d{2}$")
-INTEGER_PATTERN = re.compile(r"^\d{1,3}(?:,\d{3})*$")
+MONEY_PATTERN = re.compile(r"^-?\d+(?:\.\d{2})$")
+INTEGER_PATTERN = re.compile(r"^-?\d+$")
 
 
 @dataclass
@@ -57,6 +59,12 @@ def _gather_item_blocks(lines: Iterable[str]) -> Iterator[Sequence[str]]:
     for raw in lines:
         stripped = raw.strip()
         if not stripped:
+            continue
+
+        if _looks_like_footer_line(stripped):
+            if current:
+                yield tuple(current)
+                current = []
             continue
 
         if ITEM_PATTERN.match(stripped):
@@ -110,29 +118,45 @@ def _split_numeric_tail(tokens: Sequence[str]) -> Tuple[int, Decimal, Decimal, L
     if len(tokens) < 3:
         raise InvoiceParsingError("Incomplete item line; expected quantity, price, and amount.")
 
-    decimal_indices = [idx for idx, token in enumerate(tokens) if MONEY_PATTERN.fullmatch(_normalize_number(token))]
+    decimal_indices = [
+        idx for idx, token in enumerate(tokens) if MONEY_PATTERN.fullmatch(_normalize_number(token))
+    ]
     if len(decimal_indices) < 2:
         raise InvoiceParsingError("Could not find both unit price and amount in item line.")
 
-    amount_idx = decimal_indices[-1]
-    unit_idx = decimal_indices[-2]
+    for tail_idx in range(len(decimal_indices) - 1, 0, -1):
+        amount_idx = decimal_indices[tail_idx]
+        unit_idx = decimal_indices[tail_idx - 1]
 
-    quantity_idx = None
-    for idx in range(unit_idx - 1, -1, -1):
+        quantity_idx = _find_quantity_index(tokens, unit_idx)
+        if quantity_idx is None:
+            continue
+
+        quantity = int(_normalize_number(tokens[quantity_idx]))
+        unit_price = Decimal(_normalize_number(tokens[unit_idx]))
+        amount = Decimal(_normalize_number(tokens[amount_idx]))
+
+        if _amount_is_consistent(quantity, unit_price, amount):
+            description_tokens = list(tokens[:quantity_idx])
+            return quantity, unit_price, amount, description_tokens
+
+    raise InvoiceParsingError("Could not find both unit price and amount in item line.")
+
+
+def _find_quantity_index(tokens: Sequence[str], start_idx: int) -> Optional[int]:
+    for idx in range(start_idx - 1, -1, -1):
         candidate = tokens[idx]
         if INTEGER_PATTERN.fullmatch(_normalize_number(candidate)):
-            quantity_idx = idx
-            break
+            return idx
+    return None
 
-    if quantity_idx is None:
-        raise InvoiceParsingError("Quantity column missing for invoice item.")
 
-    quantity = int(_normalize_number(tokens[quantity_idx]))
-    unit_price = Decimal(_normalize_number(tokens[unit_idx]))
-    amount = Decimal(_normalize_number(tokens[amount_idx]))
-
-    description_tokens = list(tokens[:quantity_idx])
-    return quantity, unit_price, amount, description_tokens
+def _amount_is_consistent(quantity: int, unit_price: Decimal, amount: Decimal) -> bool:
+    if quantity <= 0:
+        return True
+    expected = (unit_price * Decimal(quantity)).quantize(Decimal("0.01"))
+    difference = abs(expected - amount)
+    return difference <= Decimal("0.02")
 
 
 def _normalize_number(token: str) -> str:
@@ -431,6 +455,31 @@ def _pick_description_merge_index(entries: Sequence[str]) -> Optional[int]:
 
 def _normalize_whitespace(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
+
+
+def _looks_like_footer_line(text: str) -> bool:
+    stripped = text.strip()
+    if not stripped:
+        return False
+
+    lower = stripped.lower()
+    if any(
+        lower.startswith(prefix)
+        for prefix in (
+            "subtotal",
+            "total",
+            "balance",
+            "-cd",
+            "cd ",
+            "delivery",
+            "claims",
+            "online discount",
+            "store discount",
+        )
+    ):
+        return True
+
+    return "discount" in lower or "pay this amount" in lower
 
 
 __all__ = ["InvoiceLine", "InvoiceParsingError", "parse_invoice_lines"]
