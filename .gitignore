@@ -1,0 +1,8 @@
+# Ignore generated CSV outputs by local runs
+*.csv
+
+# Local debug/extraction helpers (not part of deliverable)
+pdf_text.txt
+dump_pdf_text.py
+summarize_csv.py
+sample_input.txt
